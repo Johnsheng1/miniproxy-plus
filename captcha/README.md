@@ -16,16 +16,15 @@
 | `captcha/verify.php` | 新增 | 独立验证页：渲染 `<cap-widget>`，监听 `solve`/`error`，提交本地校验，成功后回源 |
 | `captcha/callback.php` | 新增 | Token 服务端二次校验接口：只信任 CAP 服务端 `/api/validate` 返回结果 |
 
-### 校验后的文件一致性
+### 副本与原文件的差异范围
 
-从 `START CONFIGURATION` 注释起，副本与原始文件的 MD5 完全相同：
+副本 `miniproxy_captcha.php` 与原 `miniproxy.php` 相比**只有两处不同**，其余代理逻辑逐字节一致：
 
-```
-551d6c7f2f48c111e02b6dda262e2114  miniproxy.php      （该注释之后的部分）
-551d6c7f2f48c111e02b6dda262e2114  miniproxy_captcha.php
-```
+1. 文件开头插入 17 行闸门调用（`require captcha/gate.php` + `mp_captcha_gate()`）；
+2. 第 492 行的编码调用改为 PHP 8.2+ 兼容写法（修复 `mb_convert_encoding()` 的
+   `HTML-ENTITIES` 废弃警告，渲染结果等价）。
 
-即：**副本的代理行为、URL 重写、白名单逻辑与原版完全一致**，只在最前面多了一道闸门。
+也就是说：**代理行为、URL 重写、白名单逻辑与原版完全一致**，只在最前面多了一道闸门。
 
 ---
 
