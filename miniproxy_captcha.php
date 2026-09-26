@@ -77,6 +77,13 @@ $landingExampleURL = "https://google.com";
 
 ob_start("ob_gzhandler");
 
+//Modern hosts run with display_errors enabled, which splices PHP warnings and deprecation
+//notices straight into the middle of proxified HTML and corrupts the page. Send them to the
+//error log instead, while still surfacing genuinely fatal problems.
+ini_set("display_errors", "0");
+ini_set("log_errors", "1");
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE & ~E_WARNING);
+
 if (version_compare(PHP_VERSION, "5.4.7", "<")) {
   die("miniProxy requires PHP version 5.4.7 or later.");
 }
@@ -257,6 +264,11 @@ function makeRequest($url) {
   curl_setopt($ch, CURLOPT_HEADER, true);
   curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
   curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+  //Bound the upstream request. Without these, a slow or hanging origin runs until
+  //PHP's max_execution_time kills the request and the visitor gets a bare 500.
+  //30s is generous for HTML; assets are usually far faster and fail quickly instead.
+  curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+  curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
   //Set the request URL.
   curl_setopt($ch, CURLOPT_URL, $url);
@@ -335,16 +347,82 @@ function proxifyCSS($css, $baseURL) {
     $normalizedCSS);
 }
 
-//Proxify "srcset" attributes (normally associated with <img> tags.)
+//Proxify "srcset" attributes (normally associated with <img> and <source> tags.)
+//A srcset is a comma-separated list of "url [descriptor]" pairs. The descriptor part
+//is optional, which is what broke the original implementation: str_split() on the
+//result of strrpos() produced a fatal error when there was no space to split on.
 function proxifySrcset($srcset, $baseURL) {
-  $sources = array_map("trim", explode(",", $srcset)); //Split all contents by comma and trim each value
-  $proxifiedSources = array_map(function($source) use ($baseURL) {
-    $components = array_map("trim", str_split($source, strrpos($source, " "))); //Split by last space and trim
-    $components[0] = PROXY_PREFIX . rel2abs(ltrim($components[0], "/"), $baseURL); //First component of the split source string should be an image URL; proxify it
-    return implode($components, " "); //Recombine the components into a single source
-  }, $sources);
-  $proxifiedSrcset = implode(", ", $proxifiedSources); //Recombine the sources into a single "srcset"
-  return $proxifiedSrcset;
+  //A srcset is a comma-separated list of "url [descriptor]" pairs. Two things make this
+  //harder than it looks:
+  //
+  //  1. The descriptor is optional. The original implementation split each candidate on
+  //     its last space via str_split($source, strrpos($source, " ")); strrpos() returns
+  //     false when there is no space, so str_split() threw a fatal error and the whole
+  //     page came back as a 500. Modern srcsets without descriptors are common.
+  //
+  //  2. URLs can contain commas, most notably data: URIs. A naive explode() on "," tears
+  //     them apart.
+  //
+  //So: split on commas, then re-join fragments that were split out of a data: URI. A
+  //candidate is considered complete once its leading token is not a bare data: payload
+  //fragment.
+  $rawParts = preg_split('/,/', (string) $srcset);
+  $candidates = [];
+  $carry = null;
+  foreach ($rawParts as $part) {
+    $trimmed = trim($part);
+    if ($trimmed === "") continue;
+
+    if ($carry !== null) {
+      //Previous part was an unterminated data: URI; re-attach this fragment.
+      $carry .= "," . $trimmed;
+    } else {
+      $carry = $trimmed;
+    }
+
+    //A data: URI is complete when it contains a comma (header,payload) and the payload
+    //does not look like a fresh candidate URL.
+    if (preg_match('/^data:/i', $carry)) {
+      if (strpos($carry, ",") !== false && !preg_match('/,\s*[^\s,]*\.[A-Za-z0-9]{2,5}(\s|$)/', $carry)) {
+        $candidates[] = $carry;
+        $carry = null;
+      }
+      //Otherwise keep accumulating: the data payload had embedded commas.
+      continue;
+    }
+
+    //Plain URL candidates are complete immediately.
+    $candidates[] = $carry;
+    $carry = null;
+  }
+  if ($carry !== null) $candidates[] = $carry;
+
+  $proxifiedSources = [];
+  foreach ($candidates as $source) {
+    if ($source === "") continue;
+
+    //Split into URL + optional descriptor. The descriptor is the final whitespace-separated
+    //token when it looks like "2x", "1.5x" or "640w"; otherwise there is no descriptor.
+    $descriptor = "";
+    $imageURL = $source;
+    if (stripos($source, "data:") !== 0 && preg_match('/^(.*\S)\s+(\S+)$/', $source, $m)) {
+      $imageURL = $m[1];
+      $descriptor = $m[2];
+    }
+
+    //Do not proxify data: URIs, they are already self-contained.
+    if (stripos($imageURL, "data:") === 0) {
+      $proxifiedSources[] = $source;
+      continue;
+    }
+
+    //rel2abs() resolves relative paths and returns absolute URLs untouched. Note the
+    //leading slash must be preserved: stripping it turns a root-relative "/a.png" into
+    //a path relative to the current directory, which resolves against the wrong base.
+    $proxifiedURL = PROXY_PREFIX . rel2abs($imageURL, $baseURL);
+    $proxifiedSources[] = $descriptor === "" ? $proxifiedURL : $proxifiedURL . " " . $descriptor;
+  }
+  return implode(", ", $proxifiedSources); //Recombine the sources with ", "
 }
 
 //Extract and sanitize the requested URL, handling cases where forms have been rewritten to point to the proxy.
@@ -468,7 +546,40 @@ if ($responseURL !== $url) {
 }
 
 //A regex that indicates which server response headers should be stripped out of the proxified response.
-$header_blacklist_pattern = "/^Content-Length|^Transfer-Encoding|^Content-Encoding.*gzip/i";
+//Beyond the original three (content framing headers that cURL has already decoded, so re-sending
+//them would corrupt the output), modern sites require stripping a number of headers that are
+//scoped to the real origin and break the page when relayed through a proxy:
+//
+//  - Content-Security-Policy: 'self' and host-based allowlists refer to the real origin, so the
+//    proxied page's own scripts, styles, fonts and AJAX calls all get blocked.
+//  - Strict-Transport-Security: pins the real origin to HTTPS in the browser and leaks to any
+//    other subdomain that happens to be served through the proxy.
+//  - Cross-Origin-*: embedder/opener policies refer to the real origin and break rendering.
+//  - Alt-Svc: advertises HTTP/3 endpoints for the real origin, bypassing the proxy altogether.
+//  - Reporting-Endpoints / Report-To: sends origin-scoped reports and can leak visitor data.
+//  - Permissions-Policy / Feature-Policy: block camera, geolocation and other APIs.
+const PROXY_STRIP_RESPONSE_HEADERS = [
+  "Content-Length",
+  "Transfer-Encoding",
+  "Content-Encoding",
+  "Content-Security-Policy",
+  "Content-Security-Policy-Report-Only",
+  "Strict-Transport-Security",
+  "Cross-Origin-Embedder-Policy",
+  "Cross-Origin-Opener-Policy",
+  "Cross-Origin-Resource-Policy",
+  "Alt-Svc",
+  "Reporting-Endpoints",
+  "Report-To",
+  "Permissions-Policy",
+  "X-Frame-Options",
+  "Feature-Policy",
+];
+
+//Build one case-insensitive pattern that matches any of the headers above at the start of a line.
+$header_blacklist_pattern = "/^(?:" . implode("|", array_map(function ($name) {
+  return preg_quote($name, "/");
+}, PROXY_STRIP_RESPONSE_HEADERS)) . ")/i";
 
 //cURL can make multiple requests internally (for example, if CURLOPT_FOLLOWLOCATION is enabled), and reports
 //headers for every request it makes. Only proxy the last set of received response headers,
@@ -517,9 +628,8 @@ if (isset($responseInfo["content_type"])) $contentType = $responseInfo["content_
 if (stripos($contentType, "text/html") !== false) {
 
   //Attempt to normalize character encoding.
-  //PHP 8.2+ 已废弃 mb_convert_encoding() 的 "HTML-ENTITIES" 目标模式，
-  //这里改为"先转 UTF-8，再把非 ASCII 字符编码为数字实体"，
-  //效果与旧的 HTML-ENTITIES 等价（只是 &eacute; 变成 &#233;，HTML 语义相同）。
+  //PHP 8.2 deprecated mb_convert_encoding()'s "HTML-ENTITIES" target mode; converting
+  //to UTF-8 first and then to numeric entities produces the same rendered output.
   $detectedEncoding = mb_detect_encoding($responseBody, "UTF-8, ISO-8859-1");
   if ($detectedEncoding) {
     if (strtoupper($detectedEncoding) !== "UTF-8") {
@@ -559,6 +669,14 @@ if (stripos($contentType, "text/html") !== false) {
       }
     }
   }
+  //Neutralize <base href>. A base tag rewrites how the browser resolves every relative URL
+  //on the page, which would point them at the real origin instead of the proxy. Removing the
+  //element is safer than rewriting it, because a base tag inside the body still applies to the
+  //whole document and other tooling may re-add it.
+  foreach ($xpath->query("//base[@href]") as $base) {
+    $base->removeAttribute("href");
+  }
+
   //Profixy <style> tags.
   foreach($xpath->query("//style") as $style) {
     $style->nodeValue = proxifyCSS($style->nodeValue, $url);
@@ -567,21 +685,75 @@ if (stripos($contentType, "text/html") !== false) {
   foreach ($xpath->query("//*[@style]") as $element) {
     $element->setAttribute("style", proxifyCSS($element->getAttribute("style"), $url));
   }
-  //Proxify "srcset" attributes in <img> tags.
-  foreach ($xpath->query("//img[@srcset]") as $element) {
+  //Proxify "srcset" attributes. Modern sites put them on <img> AND <source> tags,
+  //so query every element rather than just <img>.
+  foreach ($xpath->query("//*[@srcset]") as $element) {
     $element->setAttribute("srcset", proxifySrcset($element->getAttribute("srcset"), $url));
   }
   //Proxify any of these attributes appearing in any tag.
-  $proxifyAttributes = ["href", "src"];
-  foreach($proxifyAttributes as $attrName) {
+  //"href" and "src" are the classics. The data-* entries cover lazy-loading and
+  //video-poster patterns that modern frameworks emit instead of the plain attribute:
+  //  data-src, data-srcset, data-background-image, data-bg, data-lazy-src, data-image,
+  //  data-poster, data-original, data-lazy, data-echo, data-thumb, data-href, data-url.
+  //Each entry maps an attribute name to the pattern of values to leave alone.
+  $proxifyAttributes = [
+    "href" => "/^(about|javascript|magnet|mailto|tel|sms|ftp|ws|wss):|^#/i",
+    "src" => "/^(data):/i",
+    //Lazy-load sources: skip anything that is already absolute, or a fragment/empty value.
+    "data-src" => "/^(#|data:|about:blank)/i",
+    "data-lazy-src" => "/^(#|data:|about:blank)/i",
+    "data-original" => "/^(#|data:|about:blank)/i",
+    "data-echo" => "/^(#|data:|about:blank)/i",
+    "data-thumb" => "/^(#|data:|about:blank)/i",
+    "data-lazy" => "/^(#|data:|about:blank)/i",
+    "data-image" => "/^(#|data:|about:blank)/i",
+    "data-poster" => "/^(#|data:|about:blank)/i",
+    "data-bg" => "/^(#|data:|about:blank)/i",
+    "data-url" => "/^(#|data:|about:blank)/i",
+    "data-href" => "/^(#|data:|about:blank)/i",
+  ];
+  foreach($proxifyAttributes as $attrName => $skipPattern) {
     foreach($xpath->query("//*[@" . $attrName . "]") as $element) { //For every element with the given attribute...
       $attrContent = $element->getAttribute($attrName);
-      if ($attrName == "href" && preg_match("/^(about|javascript|magnet|mailto):|#/i", $attrContent)) continue;
-      if ($attrName == "src" && preg_match("/^(data):/i", $attrContent)) continue;
-      $attrContent = rel2abs($attrContent, $url);
-      $attrContent = PROXY_PREFIX . $attrContent;
+      if (preg_match($skipPattern, $attrContent)) continue;
+      //Only rewrite values that are actually relative; already-absolute URLs to any
+      //host (including the real origin) are still routed through the proxy, because a
+      //browser hitting the real origin directly would bypass the proxy.
+      if (preg_match("/^https?:\/\//i", $attrContent)) {
+        $attrContent = PROXY_PREFIX . $attrContent;
+      } else {
+        $attrContent = PROXY_PREFIX . rel2abs($attrContent, $url);
+      }
       $element->setAttribute($attrName, $attrContent);
     }
+  }
+  //Proxify "data-srcset", the lazy-loaded twin of srcset.
+  foreach ($xpath->query("//*[@data-srcset]") as $element) {
+    $element->setAttribute("data-srcset", proxifySrcset($element->getAttribute("data-srcset"), $url));
+  }
+  //Proxify "imagesrcset" on <link rel="preload">, which tells the browser which image
+  //a future navigation will need. Without this, preloaded images miss the proxy.
+  foreach ($xpath->query("//*[@imagesrcset]") as $element) {
+    $element->setAttribute("imagesrcset", proxifySrcset($element->getAttribute("imagesrcset"), $url));
+  }
+  //Remove Subresource Integrity attributes. The hash was computed against the file at
+  //the real origin; routing the same bytes through this proxy is byte-identical, but the
+  //browser blocks the resource if the URL origin does not match what the hash expects,
+  //and some sites also key integrity to crossorigin behaviour. Dropping the attribute is
+  //the safest option and costs nothing but a marginally weaker integrity guarantee for
+  //third-party assets, which is inherent to proxying.
+  foreach ($xpath->query("//*[@integrity]") as $element) {
+    $element->removeAttribute("integrity");
+  }
+  //Drop CSP nonces on inline <script>/<style>. A nonce only authorises inline content when
+  //it matches the page's Content-Security-Policy; since the CSP is stripped, nonces are
+  //meaningless. Worse, if the page is behind a CSP from another layer, a stale nonce makes
+  //every inline script fail. Removing them is harmless.
+  foreach ($xpath->query("//script[@nonce]") as $element) {
+    $element->removeAttribute("nonce");
+  }
+  foreach ($xpath->query("//style[@nonce]") as $element) {
+    $element->removeAttribute("nonce");
   }
 
   //Attempt to force AJAX requests to be made through the proxy by
@@ -655,13 +827,60 @@ if (stripos($contentType, "text/html") !== false) {
 
           }
 
+          function proxifyURL(u) {
+            var abs = rel2abs("' . $url . '", u);
+            if (abs === null) return u;
+            if (abs.indexOf("' . PROXY_PREFIX . '") != -1) return abs;
+            // Only rewrite http(s) URLs; blob:, data: and about: must pass through
+            // unchanged or the browser throws before the request is constructed.
+            if (!/^https?:\/\//.test(abs)) return u;
+            return "' . PROXY_PREFIX . '" + abs;
+          }
+
           var proxied = window.XMLHttpRequest.prototype.open;
           window.XMLHttpRequest.prototype.open = function() {
               if (arguments[1] !== null && arguments[1] !== undefined) {
-                var url = arguments[1];
-                url = rel2abs("' . $url . '", url);
-                if (url.indexOf("' . PROXY_PREFIX . '") == -1) {
-                  url = "' . PROXY_PREFIX . '" + url;
+                arguments[1] = proxifyURL(arguments[1]);
+              }
+              return proxied.apply(this, [].slice.call(arguments));
+          };
+
+          // fetch() is what modern sites actually use. The URL is the first argument
+          // and may also arrive as a Request object, which carries it in .url.
+          if (window.fetch) {
+            var proxiedFetch = window.fetch;
+            window.fetch = function(input, init) {
+              if (typeof input === "string") {
+                input = proxifyURL(input);
+              } else if (input && typeof input === "object" && typeof input.url === "string") {
+                try {
+                  return proxiedFetch(new Request(proxifyURL(input.url), input), init);
+                } catch (e) {
+                  return proxiedFetch(input, init);
+                }
+              }
+              return proxiedFetch(input, init);
+            };
+          }
+
+          // navigator.sendBeacon() sends analytics payloads; route them through the
+          // proxy so the data lands on the origin instead of failing on this host.
+          if (navigator.sendBeacon) {
+            var proxiedBeacon = navigator.sendBeacon.bind(navigator);
+            navigator.sendBeacon = function(url, data) {
+              return proxiedBeacon(proxifyURL(url), data);
+            };
+          }
+
+          // window.open() with a URL pointing at the real origin would escape the proxy.
+          var proxiedOpen = window.open;
+          window.open = function(url) {
+            if (typeof url === "string" && url !== "") {
+              url = proxifyURL(url);
+            }
+            return proxiedOpen.apply(window, arguments);
+          };
+
                 }
                 arguments[1] = url;
               }

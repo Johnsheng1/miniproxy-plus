@@ -10,7 +10,8 @@
 | 文件 | 类型 | 职责 |
 |---|---|---|
 | `miniproxy.php` | 原文件（**未改动**） | 原始代理逻辑，作为回退依据 |
-| `miniproxy_captcha.php` | 新增副本 | 带验证闸门的代理入口。与原文件逐字节一致，仅在开头插入 17 行闸门调用 |
+| `miniproxy_captcha.php` | 新增副本 | 带验证闸门的代理入口：CAP 闸门 + 现代网页适配版代理逻辑。
+自 `START CONFIGURATION` 起与 `main` 分支 `miniproxy2.php` 逐字节一致 |
 | `captcha/config.php` | 新增 | 集中配置：CAP 地址、有效期、失败限制、超时、路径 |
 | `captcha/gate.php` | 新增 | 闸门核心库：Session 加固、验证状态判断、跳转、服务端校验、防开放重定向、防刷 |
 | `captcha/verify.php` | 新增 | 独立验证页：渲染 `<cap-widget>`，监听 `solve`/`error`，提交本地校验，成功后回源 |
@@ -18,13 +19,22 @@
 
 ### 副本与原文件的差异范围
 
-副本 `miniproxy_captcha.php` 与原 `miniproxy.php` 相比**只有两处不同**，其余代理逻辑逐字节一致：
+副本 `miniproxy_captcha.php` 由两部分拼成：
 
-1. 文件开头插入 17 行闸门调用（`require captcha/gate.php` + `mp_captcha_gate()`）；
-2. 第 492 行的编码调用改为 PHP 8.2+ 兼容写法（修复 `mb_convert_encoding()` 的
-   `HTML-ENTITIES` 废弃警告，渲染结果等价）。
+1. 文件开头 31 行 CAP 闸门调用（`require captcha/gate.php` + `mp_captcha_gate()`）；
+2. 从 `START CONFIGURATION` 起的全部代理逻辑，与 `main` 分支的 `miniproxy2.php`
+   **逐字节一致**（MD5 同为 `b5ff664f06af264a76ae4a59871f9378`）。
 
-也就是说：**代理行为、URL 重写、白名单逻辑与原版完全一致**，只在最前面多了一道闸门。
+也就是说：本分支入口 = **CAP 闸门 + 现代网页适配版代理**，既有人机验证，
+也包含下述现代网页修复（详见 `test_modern.php` 与提交记录）：
+
+- `proxifySrcset()` 致命错误（无描述符的 srcset 导致 500）
+- CSP / HSTS / COOP / COEP / Alt-Svc 等响应头透传
+- `data-src`、`data-srcset`、`imagesrcset`、`integrity`、`nonce`、`<base href>`
+- `fetch` / `sendBeacon` / `window.open` 的客户端改写
+- PHP 8.2 `mb_convert_encoding()` 废弃警告、`display_errors` 污染、cURL 超时
+
+原始文件 `miniproxy.php` 在两个分支上均**未做任何修改**，可作为回退依据。
 
 ---
 
@@ -225,7 +235,21 @@ define('CAPTCHA_BASE_PATH', '/proxy');   //不要以 / 结尾
 
 ---
 
-## 六、联调测试建议
+## 六、已验证事项
+
+| 项目 | 结果 |
+|---|---|
+| 原文件改动 | `miniproxy.php` 零改动，与仓库历史一致 |
+| 语法检查 | 全部 PHP 文件通过 `php -l` |
+| 闸门单元测试 | `captcha/test_gate.php` 51 项通过 |
+| 现代网页单元测试 | `test_modern.php` 52 项通过 |
+| CAP 真实联调 | PoW 50/50 → `redeem` 成功 → 服务端 `validate` 返回 `success:true` |
+| 闸门 + 现代改造协同 | 验证通过后成功代理 `wikipedia.org`（原版 500），200 / 149KB，无 PHP 错误污染，CSP 已剥离 |
+| 代理逻辑一致性 | 入口副本自 `START CONFIGURATION` 起与 `main` 分支 `miniproxy2.php` MD5 一致 |
+
+---
+
+## 七、联调测试建议
 
 1. 直接访问 `miniproxy_captcha.php?https://example.com`
    → 应 302 到 `captcha/verify.php?redirect=...`
