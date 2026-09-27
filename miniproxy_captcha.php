@@ -1017,7 +1017,11 @@ if (stripos($contentType, "text/html") !== false) {
   //TODO: Do this check before attempting to do any sort of DOM parsing?
   if ($prependElem != null) {
 
-    $scriptElem = $doc->createElement("script",
+    //注意：不能用 createElement("script", $js) 直接传文本。
+    //DomDocument 会把第二个参数当 HTML 实体解码，&& 会被悄悄变成 &，
+    //导致注入的 JS 语法错误、整个脚本失效。改用文本节点可原样保留内容。
+    $scriptElem = $doc->createElement("script");
+    $scriptElem->appendChild($doc->createTextNode(
       '(function() {
 
         if (window.XMLHttpRequest) {
@@ -1066,14 +1070,79 @@ if (stripos($contentType, "text/html") !== false) {
 
           }
 
+          //供下面所有拦截逻辑使用的常量。必须在使用前定义：var 只提升声明、
+          //不提升赋值，若放在函数后面，proxifyURL 被调用时读到的还是 undefined。
+          var PROXY_PREFIX = "' . PROXY_PREFIX . '";
+          //只取路径部分，去掉查询串。PROXY_PREFIX 形如
+          //http://host/miniproxy.php?，而 location.pathname 永不含 ?，
+          //所以必须在第一个 ? 处截断，否则前缀判断永远不成立。
+          var PROXY_PREFIX_PATH = PROXY_PREFIX.replace(/^[a-z]+:\/\/[^\/]+/, "").split("?")[0];
+          var PROXY_TARGET_URL = "' . $url . '";
+
+          //当前被代理的原始地址，作为相对 URL 的解析基准。
+          //页面可能被 SPA 改写过地址栏，所以每次都从 location 重新推导，
+          //而不是固定用首次加载时的地址（node-unblocker 也是这样处理的）。
+          //推导"当前正在被代理的原始地址"，作为相对 URL 的解析基准。
+          //
+          // 本代理是查询串风格：地址形如
+          //   http://proxy/miniproxy.php?https://site.com/dir/page.html?x=1
+          // 浏览器里 location.pathname 是 /miniproxy.php（不含 ?），
+          // location.search 是 "?https://site.com/dir/page.html?x=1"。
+          //
+          // 因此这里按优先级尝试三种来源：
+          //   1. 查询串里第一个 http(s):// 起始的片段（最常见）
+          //   2. 路径串风格：前缀之后的所有内容（兼容未来改成 /proxy/http://... 形式）
+          //   3. 服务端注入的 PROXY_TARGET_URL（兜底）
+          function currentRemoteHref() {
+            var q = location.search || "";
+            if (q.charAt(0) === "?") q = q.substr(1);
+            if (q) {
+              //查询串以被代理地址开头，取到下一个 & 为止
+              var amp = q.indexOf("&");
+              var head = amp === -1 ? q : q.substr(0, amp);
+              if (/^https?:\/\//.test(head)) return head;
+              //有些部署会把地址编码，这里做一次解码尝试
+              try {
+                var decoded = decodeURIComponent(head);
+                if (/^https?:\/\//.test(decoded)) return decoded;
+              } catch (e) { /* 解码失败则忽略 */ }
+            }
+
+            var p = location.pathname;
+            if (p.indexOf(PROXY_PREFIX_PATH) === 0) {
+              var rest = p.substr(PROXY_PREFIX_PATH.length) + location.search + location.hash;
+              if (/^https?:\/\//.test(rest)) return rest;
+            }
+
+            return PROXY_TARGET_URL;
+          }
+
           function proxifyURL(u) {
-            var abs = rel2abs("' . $url . '", u);
+            if (typeof u !== "string" || u === "") return u;
+            //已走代理的直接放过，避免重复套前缀
+            if (u.indexOf(PROXY_PREFIX) === 0) return u;
+            if (u.indexOf("//" + location.host + PROXY_PREFIX_PATH) === 0) return u;
+
+            var abs = rel2abs(currentRemoteHref(), u);
             if (abs === null) return u;
-            if (abs.indexOf("' . PROXY_PREFIX . '") != -1) return abs;
-            // Only rewrite http(s) URLs; blob:, data: and about: must pass through
-            // unchanged or the browser throws before the request is constructed.
+
+            //只处理 http(s)。blob:、data:、about: 必须原样返回，
+            //否则浏览器在构造请求前就会抛错。
             if (!/^https?:\/\//.test(abs)) return u;
-            return "' . PROXY_PREFIX . '" + abs;
+
+            //站点有时会用"当前 host + 相对路径"的方式构造地址，这时 host
+            //指的是代理自己，需要换回真实站点的 host 与协议。
+            try {
+              var parsed = new URL(abs);
+              if (parsed.hostname === location.hostname) {
+                var remote = new URL(currentRemoteHref());
+                parsed.host = remote.host;
+                parsed.protocol = remote.protocol;
+                abs = parsed.href;
+              }
+            } catch (e) { /* URL 解析失败时保留原值，不阻断请求 */ }
+
+            return PROXY_PREFIX + abs;
           }
 
           var proxied = window.XMLHttpRequest.prototype.open;
@@ -1084,8 +1153,8 @@ if (stripos($contentType, "text/html") !== false) {
               return proxied.apply(this, [].slice.call(arguments));
           };
 
-          // fetch() is what modern sites actually use. The URL is the first argument
-          // and may also arrive as a Request object, which carries it in .url.
+          //fetch() 是现代站点实际在用的接口。第一个参数既可能是字符串，
+          //也可能是 Request 对象（URL 存在 .url 上）。
           if (window.fetch) {
             var proxiedFetch = window.fetch;
             window.fetch = function(input, init) {
@@ -1095,6 +1164,7 @@ if (stripos($contentType, "text/html") !== false) {
                 try {
                   return proxiedFetch(new Request(proxifyURL(input.url), input), init);
                 } catch (e) {
+                  if (window.__lastErr !== undefined) window.__lastErr = e;
                   return proxiedFetch(input, init);
                 }
               }
@@ -1102,8 +1172,7 @@ if (stripos($contentType, "text/html") !== false) {
             };
           }
 
-          // navigator.sendBeacon() sends analytics payloads; route them through the
-          // proxy so the data lands on the origin instead of failing on this host.
+          //navigator.sendBeacon() 用于埋点上报，同样要走代理。
           if (navigator.sendBeacon) {
             var proxiedBeacon = navigator.sendBeacon.bind(navigator);
             navigator.sendBeacon = function(url, data) {
@@ -1111,25 +1180,143 @@ if (stripos($contentType, "text/html") !== false) {
             };
           }
 
-          // window.open() with a URL pointing at the real origin would escape the proxy.
+          //window.open() 指向真实站点会让浏览器离开代理。
           var proxiedOpen = window.open;
           window.open = function(url) {
             if (typeof url === "string" && url !== "") {
-              url = proxifyURL(url);
+              arguments[0] = proxifyURL(url);
             }
             return proxiedOpen.apply(window, arguments);
           };
 
+          //--- 以下为 node-unblocker 覆盖到、而此前缺失的拦截点 ---
+
+          //document.createElement()：只在内存中创建、还没插入 DOM 的
+          //<img>、<script>、<iframe> 等元素同样会发请求。服务端 DOM 重写
+          //看不到它们，只能在这里给 src/href 加 setter。
+          if (window.document && window.document.createElement) {
+            var proxiedCreateElement = window.document.createElement;
+            window.document.createElement = function(tagName, options) {
+              var element = proxiedCreateElement.call(window.document, tagName, options);
+              ["src", "href"].forEach(function(attr) {
+                Object.defineProperty(element, attr, {
+                  configurable: true,
+                  set: function(value) {
+                    //先删掉 setter 再赋值，否则会无限递归
+                    delete element[attr];
+                    element[attr] = proxifyURL(value);
+                  }
+                });
+              });
+              return element;
+            };
+          }
+
+          //new Image() / new Audio() 等不走 createElement，但同样有 src。
+          //注意：绝不能把 "Object" 这类基础构造函数放进来。包装后 new 出来的对象
+          //原型链会变，导致页面里所有 Object.defineProperty / Object.assign 调用失败。
+          //同理，"Audio"、"Video" 等若站点自己重定义过也不要动。
+          ["Image", "Audio", "Video", "Source", "Track", "Embed"].forEach(function(name) {
+            var Ctor = window[name];
+            if (typeof Ctor !== "function") return;
+            window[name] = function() {
+              var obj = new Ctor();
+              try {
+                Object.defineProperty(obj, "src", {
+                  configurable: true,
+                  set: function(value) { delete obj.src; obj.src = proxifyURL(value); }
+                });
+              } catch (e) { /* 某些实现的属性不可配置，忽略 */ }
+              return obj;
+            };
+          });
+
+          //WebSocket：视频站和实时通知大量使用。ws/wss 无法直接走 HTTP 代理，
+          //这里至少把指向"代理自身 host"的连接改回真实站点，避免连错主机。
+          if (window.WebSocket) {
+            var proxiedWebSocket = window.WebSocket;
+            window.WebSocket = function(url, protocols) {
+              if (typeof url === "string") {
+                var m = url.match(/^ws(s?):\/\/([^/]+)(\/.*)?$/);
+                if (m && (m[2] === location.host || m[2] === location.hostname)) {
+                  try {
+                    var remote = new URL(currentRemoteHref());
+                    var scheme = location.protocol === "https:" ? "wss" : "ws";
+                    url = scheme + "://" + remote.host + (m[3] || "");
+                  } catch (e) { /* 解析失败则用原地址 */ }
                 }
-                arguments[1] = url;
               }
-              return proxied.apply(this, [].slice.call(arguments));
-          };
+              return new proxiedWebSocket(url, protocols);
+            };
+          }
+
+          //history.pushState / replaceState：SPA 换页时若不改地址，
+          //地址栏会显示真实站点，刷新后即离开代理。
+          if (window.history) {
+            ["pushState", "replaceState"].forEach(function(method) {
+              var original = window.history[method];
+              if (typeof original !== "function") return;
+              window.history[method] = function(state, title, url) {
+                if (typeof url === "string" && url !== "") {
+                  arguments[2] = proxifyURL(url);
+                }
+                return original.apply(window.history, arguments);
+              };
+            });
+          }
+
+          //Service Worker：注册脚本指向真实站点时会脱离代理控制。
+          try {
+            if (navigator.serviceWorker && typeof navigator.serviceWorker.register === "function") {
+              var proxiedRegister = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+              navigator.serviceWorker.register = function(scriptURL, options) {
+                return proxiedRegister(proxifyURL(scriptURL), options);
+              };
+            }
+          } catch (e) { /* serviceWorker 在某些上下文不可写，忽略 */ }
+
+          //EventSource：SSE 长连接，同 WebSocket 的主机修正逻辑。
+          if (window.EventSource) {
+            var proxiedEventSource = window.EventSource;
+            window.EventSource = function(url, config) {
+              return new proxiedEventSource(proxifyURL(url), config);
+            };
+          }
+
+          //navigator.sendBeacon 之外的 navigator 入口（部分站点用 share/clipboard）
+          if (navigator.share) {
+            var proxiedShare = navigator.share.bind(navigator);
+            navigator.share = function(data) {
+              if (data && typeof data.url === "string") {
+                data = Object.assign({}, data, { url: proxifyURL(data.url) });
+              }
+              return proxiedShare(data);
+            };
+          }
+
+          //location 赋值：直接改 location.href 是最常见的跳转方式，
+          //上面的 window.open 覆盖不到它。
+          (function initLocationWatch() {
+            try {
+              var locProto = Object.getPrototypeOf(location);
+              var desc = Object.getOwnPropertyDescriptor(locProto, "href");
+              if (!desc || !desc.set) return;
+              Object.defineProperty(location, "href", {
+                configurable: true,
+                get: function() { return desc.get.call(location); },
+                set: function(v) {
+                  var fixed = proxifyURL(v);
+                  if (fixed !== v) { desc.set.call(location, fixed); }
+                  else { desc.set.call(location, v); }
+                }
+              });
+            } catch (e) { /* location 在某些浏览器不可包装，忽略 */ }
+          })();
 
         }
 
       })();'
-    );
+    ));
     $scriptElem->setAttribute("type", "text/javascript");
 
     $prependElem->insertBefore($scriptElem, $prependElem->firstChild);

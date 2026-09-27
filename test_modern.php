@@ -473,4 +473,54 @@ echo "
 ";
 }
 
+
+// ---------------------------------------------------------------------------
+// G. 客户端脚本注入与 URL 拦截面
+//
+// 参考 node-unblocker 的做法：服务端无法看到 JS 里动态构造的 URL，
+// 因此向页面注入一段脚本，覆盖浏览器里所有会发起请求的入口。
+//
+// 这里只做静态断言（源码里是否包含各拦截点），因为真实浏览器行为
+// 需要 DOM 环境。动态断言见 test_injected.js（需 node 运行）。
+// ---------------------------------------------------------------------------
+
+echo "\n=== G. 客户端脚本注入与 URL 拦截面 ===\n";
+$clientChecks = [
+  ['proxifyURL 基准从 location 动态推导', 'function currentRemoteHref()'],
+  ['查询串风格的地址解析', 'location.search'],
+  ['XMLHttpRequest', 'window.XMLHttpRequest.prototype.open'],
+  ['fetch（含 Request 对象）', 'typeof input.url === "string"'],
+  ['sendBeacon', 'navigator.sendBeacon'],
+  ['window.open', 'proxiedOpen.apply'],
+  ['createElement 的 src/href setter', 'Object.defineProperty(element, attr'],
+  ['new Image() 等内存构造', '"Image", "Audio", "Video", "Source", "Track", "Embed"'],
+  ['WebSocket 主机修正', 'proxiedWebSocket'],
+  ['history.pushState/replaceState', '"pushState", "replaceState"'],
+  ['Service Worker', 'navigator.serviceWorker'],
+  ['EventSource', 'proxiedEventSource'],
+  ['location.href 赋值', 'initLocationWatch'],
+];
+foreach ($clientChecks as $c) {
+  checkTrue($c[0], strpos($src, $c[1]) !== false);
+}
+//注入方式必须用文本节点。createElement("script", $text) 会把 && 当 HTML 实体
+//解码成 &，导致注入的 JS 语法错误、整个脚本失效。
+checkTrue('脚本经 createTextNode 注入（避免 && 被改成 &）',
+  strpos($src, 'createTextNode(') !== false);
+//去掉注释行后再判断：注释里会提到"不能用 createElement(script, $text)"作为说明
+$srcCodeOnly = preg_replace('/^\s*\/\/.*$/m', '', $src);
+checkTrue('未使用 createElement 直接传脚本文本',
+  strpos($srcCodeOnly, 'createElement("script", ' . chr(36)) === false);
+//常量必须在使用前定义：var 只提升声明、不提升赋值
+$posPrefix = strpos($src, 'var PROXY_PREFIX = ');
+$posUse = strpos($src, 'function proxifyURL');
+checkTrue('PROXY_PREFIX 在 proxifyURL 之前定义',
+  $posPrefix !== false && $posUse !== false && $posPrefix < $posUse);
+//绝对不能在包装列表里放基础构造函数
+checkTrue('未包装 Object 构造函数',
+  strpos($src, '"Embed", "Object"') === false && strpos($src, '", "Object"]') === false);
+
+echo "\n========================================\n";
+echo "通过 $pass 项，失败 $fail 项\n";
+if ($fail > 0) { echo "失败项：" . implode("、", $errors) . "\n"; }
 exit($fail === 0 ? 0 : 1);
