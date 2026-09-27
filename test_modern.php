@@ -1,6 +1,6 @@
 <?php
 /*
- * miniproxy2.php 现代网页适配改造 —— 回归测试
+ * miniproxy-plus.php 现代网页适配改造 —— 回归测试
  * 运行：php test_modern.php
  *
  * 覆盖两部分：
@@ -24,11 +24,11 @@ function checkTrue($label, $cond) { check($label, (bool) $cond, true); }
 /* ---------------------------------------------------------------------------
  * A. 纯函数测试
  *
- * miniproxy2.php 的顶层逻辑会尝试解析请求并 die()，不能直接 include。
+ * miniproxy-plus.php 的顶层逻辑会尝试解析请求并 die()，不能直接 include。
  * 因此这里用"读取源码 + 反射重建"的方式，只取被测函数定义执行。
  * --------------------------------------------------------------------------- */
 
-$src = file_get_contents(__DIR__ . '/miniproxy2.php');
+$src = file_get_contents(__DIR__ . '/miniproxy-plus.php');
 
 /** 取出某个函数的完整源码并 eval 出来，返回其 ReflectionFunction */
 function extract_function($src, $signature) {
@@ -98,7 +98,7 @@ check('根相对路径',
   $P . 'https://s.com/assets/a.png 1x');
 
 echo "\n=== B. 响应头黑名单（匹配方式与原版一致的正则） ===\n";
-// 复刻 miniproxy2.php 中构造黑名单的代码，确保检测逻辑一致
+// 复刻 miniproxy-plus.php 中构造黑名单的代码，确保检测逻辑一致
 $strip = [
   "Content-Length", "Transfer-Encoding", "Content-Encoding",
   "Content-Security-Policy", "Content-Security-Policy-Report-Only",

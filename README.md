@@ -1,75 +1,141 @@
 # miniProxy-plus
 
 一个轻量级 PHP Web 代理，在 [miniProxy](https://github.com/joshdick/miniProxy) 基础上
-增加了 **CAP 人机验证闸门**，用于防止代理被匿名滥用。
+增加了 **现代网页适配**与可选的 **CAP 人机验证闸门**，用于防止代理被匿名滥用。
 
-本项目分成两个分支，按需选择：
-
-| 分支 | 内容 | 适合谁 |
-|---|---|---|
-| [`main`](../../tree/main) | 原版 miniProxy，单文件，无任何验证 | 内网自用、已通过其他方式限流、需要最简部署 |
-| [`feat/captcha-gate`](../../tree/feat/captcha-gate) | 接入 CAP 人机验证，未通过验证一律跳验证页 | 公网部署、需要防刷和防扫描 |
-
-> 上游 miniProxy 自 2020-04-26 起已停止维护，本项目同样"按现状提供"，自行承担使用风险。
+原始文件 `miniproxy.php` 在两个分支上均**未做任何修改**，作为回退依据完整保留。
+所有改造都在新增的入口副本上进行。
 
 ---
 
-## 一、两个分支的差异
+## 一、三个文件，按需选择
 
-两个分支的代理核心完全一致，`feat/captcha-gate` 只在原有逻辑**之外**新增验证体系，
-并且**没有修改原文件 `miniproxy.php` 的任何一个字节**——它被完整保留作为回退依据。
+| 文件 | 分支 | 人机验证 | 现代网页适配 | 适合谁 |
+|---|---|---|---|---|
+| `miniproxy.php` | 两分支共有 | ✗ | ✗ | 内网自用、已有限流、需要最简部署 |
+| `miniproxy-plus.php` | `main` | ✗ | ✓ | 公网部署、需要兼容现代站点 |
+| `miniproxy_captcha.php` | `feat/captcha-gate` | ✓ | ✓ | 公网部署、既要防刷又要兼容现代站点 |
 
 ```
-main（1 个文件）                      feat/captcha-gate（8 个文件）
-├─ miniproxy.php                      ├─ miniproxy.php            ← 原样保留，未改动
-                                       ├─ miniproxy_captcha.php    ← 带闸门的入口副本
-                                       └─ captcha/
-                                          ├─ gate.php              闸门核心库
-                                          ├─ config.php            集中配置
-                                          ├─ verify.php            独立验证页
-                                          ├─ callback.php          token 服务端校验接口
-                                          ├─ test_gate.php         安全逻辑单元测试
-                                          └─ README.md             详细部署说明
+main 分支                              feat/captcha-gate 分支
+├─ miniproxy.php        ← 未改动        ├─ miniproxy.php          ← 未改动
+├─ miniproxy-plus.php   ← 现代适配      ├─ miniproxy_captcha.php  ← 闸门 + 现代适配
+└─ test_modern.php                       ├─ captcha/
+                                           │  ├─ gate.php          闸门核心库
+                                           │  ├─ config.php        集中配置
+                                           │  ├─ verify.php        独立验证页
+                                           │  ├─ callback.php      token 服务端校验
+                                           │  ├─ test_gate.php     闸门单元测试
+                                           │  └─ README.md         详细部署说明
+                                           └─ test_modern.php
 ```
 
-副本 `miniproxy_captcha.php` 与原文件的差异**仅有两处**，其余逐字节一致：
-
-1. 文件开头插入 17 行闸门调用；
-2. 编码调用改为 PHP 8.2+ 兼容写法（消除 `mb_convert_encoding()` 的 `HTML-ENTITIES` 废弃警告）。
+`miniproxy-plus.php` 与 `miniproxy_captcha.php` 自 `START CONFIGURATION` 起的代理逻辑
+**逐字节一致**（MD5 同为 `b5ff664f06af264a76ae4a59871f9378`），两者不会因重复修改而分叉。
 
 ---
 
-## 二、环境要求
+## 二、现代网页适配修了什么
+
+不是凭空加功能，而是用两个现代代理的入口分别抓真实站点，把问题一个个测出来再修。
+以下 6 个缺陷均经实测确认：
+
+### 1. `proxifySrcset()` 致命错误（500）
+
+```php
+// 原版
+$components = array_map("trim", str_split($source, strrpos($source, " ")));
+```
+
+`srcset` 条目的描述符是可选的，没有空格时 `strrpos()` 返回 `false`，
+`str_split()` 直接抛致命错误。**访问 wikipedia.org 会得到 500**。
+
+改为按逗号切分后单独解析描述符，并正确处理含逗号的 `data:` URI。
+
+### 2. CSP 透传，页面被浏览器拦死
+
+`Content-Security-Policy` 原样转发，但其中的 `default-src 'self'`、`worker-src 'self'`
+指向的是**真实源站**，不是代理。结果是代理页自身的脚本、样式、字体、AJAX 全部被拦。
+
+### 3. HSTS 泄漏
+
+`Strict-Transport-Security` 透传会把真实源站钉死为 HTTPS，并影响通过代理访问的
+其他子域。
+
+### 4. 响应头黑名单只剥 3 项
+
+原版只剥离 `Content-Length` / `Transfer-Encoding` / `Content-Encoding`。
+现补充：
+
+- `Content-Security-Policy`（含 `-Report-Only`）
+- `Strict-Transport-Security`
+- `Cross-Origin-Embedder-Policy` / `-Opener-Policy` / `-Resource-Policy`
+- `Alt-Svc`（会通告 HTTP/3 端点，绕过代理）
+- `Reporting-Endpoints` / `Report-To`
+- `Permissions-Policy` / `Feature-Policy`
+- `X-Frame-Options`
+
+### 5. 现代属性完全没处理
+
+只重写 `href` / `src`。现补充：
+
+- `data-src`、`data-srcset`、`data-lazy-src`、`data-original`、`data-image`、
+  `data-poster`、`data-bg`、`data-url`、`data-href` 等懒加载属性
+- `srcset` / `imagesrcset` 从仅 `<img>` 扩展到所有元素
+- 移除 `integrity`（SRI 哈希与代理源不匹配会被浏览器拦）
+- 移除 `nonce`（CSP 已被剥离，留着反而让内联脚本失败）
+- 中和 `<base href>`（否则所有相对 URL 都解析到真实源站）
+- **绝对 URL 也强制走代理**：原版 `rel2abs()` 对绝对 URL 原样返回，
+  导致 `href="https://evil.com"` 会让浏览器直接离开代理
+
+### 6. 客户端只 patch 了 XMLHttpRequest
+
+现代站点早就不用 XHR 了。现补充：
+
+- `window.fetch`（含 `Request` 对象形态）
+- `navigator.sendBeacon`
+- `window.open`
+- `blob:` / `data:` / `about:` 等协议直连的例外
+
+### 另外三项健壮性修复
+
+- PHP 8.2+ 的 `mb_convert_encoding(..., "HTML-ENTITIES", ...)` 废弃警告，
+  改为转 UTF-8 后 `mb_encode_numericentity()`，渲染结果等价
+- 关闭 `display_errors`，避免 PHP 警告/弃用提示混进代理 HTML 破坏页面
+- cURL 增加连接与总超时（10s / 30s），避免慢站点拖到 `max_execution_time` 返回裸 500
+
+---
+
+## 三、环境要求
 
 | 项目 | 要求 |
 |---|---|
-| PHP | `main` 分支 ≥ 5.4.7；`feat/captcha-gate` 分支 ≥ 5.6（用到 `hash_equals`） |
+| PHP | `miniproxy.php` ≥ 5.4.7；两个新版入口 ≥ 5.6（用到 `hash_equals`） |
 | 扩展 | `curl`、`mbstring`、`xml` 三者必装 |
-| Session | 服务端 PHP Session 可写（`captcha` 分支需要） |
-| 网络 | 出站可访问 `captcha.api.968111.xyz`（`captcha` 分支需要） |
+| Session | 仅 `feat/captcha-gate` 分支需要 PHP Session 可写 |
+| 网络 | 仅 `feat/captcha-gate` 分支需出站可访问 `captcha.api.968111.xyz` |
 
 检查命令：
 
 ```bash
 php -v
 php -m | grep -Ei 'curl|mbstring|xml'
-php -i | grep session.save_path    # 该路径需可写
 ```
 
 ---
 
-## 三、部署 `main` 分支（原版，三步）
+## 四、部署 `miniproxy-plus.php`（main 分支）
 
 ```bash
 git clone https://github.com/Johnsheng1/miniproxy-plus.git
 cd miniproxy-plus && git checkout main
 ```
 
-1. 上传 `miniproxy.php` 到站点目录；
-2. 浏览器访问 `https://你的域名/miniproxy.php`，看到代理首页即成功；
+1. 上传 `miniproxy-plus.php` 到站点目录；
+2. 浏览器访问 `https://你的域名/miniproxy-plus.php`，看到代理首页即成功；
 3. 按需修改文件顶部 `/*** START CONFIGURATION ***/` 区域的配置项。
 
-### 原版配置项
+### 配置项（与原版完全一致）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -81,15 +147,15 @@ cd miniproxy-plus && git checkout main
 | `$startURL` | `""` | 直接访问时的默认代理目标，留空则显示首页 |
 | `$landingExampleURL` | `"https://google.com"` | 首页表单里的示例 URL |
 
-用法：在 URL 后拼上要代理的地址：
+用法：在 URL 后拼上要代理的地址。
 
 ```
-https://你的域名/miniproxy.php?https://example.com
+https://你的域名/miniproxy-plus.php?https://example.com
 ```
 
 ---
 
-## 四、部署 `feat/captcha-gate` 分支（带人机验证）
+## 五、部署 `miniproxy_captcha.php`（feat/captcha-gate 分支）
 
 ### 1. 取代码
 
@@ -191,12 +257,16 @@ define('CAPTCHA_BASE_PATH', '/proxy');   // 不要以 / 结尾
 
 ```bash
 # 语法检查：应全部 No syntax errors
-for f in miniproxy_captcha.php captcha/config.php captcha/gate.php captcha/verify.php captcha/callback.php; do
+for f in miniproxy_captcha.php captcha/config.php captcha/gate.php \
+         captcha/verify.php captcha/callback.php; do
   php -l $f
 done
 
 # 安全逻辑单元测试：期望"通过 51 项，失败 0 项"
 php captcha/test_gate.php
+
+# 现代网页适配测试：期望"通过 52 项，失败 0 项"
+php test_modern.php
 
 # 未验证访问应返回 302 跳验证页
 curl -sI "https://你的域名/miniproxy_captcha.php?https://example.com" | grep -i location
@@ -208,7 +278,7 @@ curl -sI "https://你的域名/miniproxy_captcha.php?https://example.com" | grep
 
 ---
 
-## 五、验证流程与安全设计（`feat/captcha-gate`）
+## 六、CAP 验证流程与安全设计（`feat/captcha-gate`）
 
 ```
 访问受保护页 → 闸门检查 Session
@@ -241,18 +311,19 @@ curl -sI "https://你的域名/miniproxy_captcha.php?https://example.com" | grep
 
 ---
 
-## 六、已验证事项
+## 七、已验证事项
 
 | 项目 | 结果 |
 |---|---|
-| 原文件改动 | `miniproxy.php` 零改动，与仓库历史完全一致 |
-| 语法检查 | 7 个 PHP 文件全部通过 `php -l` |
-| 单元测试 | `captcha/test_gate.php` 51 项全部通过 |
-| 真实 CAP 联调 | PoW 50/50 挑战求解 → `redeem` 成功 → 服务端 `validate` 返回 `success:true` |
-| 端到端 | 验证后成功代理 `httpbin.org/get`，客户端 IP 已被匿名化 |
-| 防重定向 | 外域 / `javascript:` / `data:` / 协议相对 / 用户信息混淆等用例全部拦截 |
-| 有效期 | 300 秒过期后正确要求重新验证 |
+| 原文件改动 | `miniproxy.php` 零改动，与仓库历史一致 |
+| 语法检查 | 全部 PHP 文件通过 `php -l` |
+| 闸门单元测试 | `captcha/test_gate.php` 51 项通过 |
+| 现代网页单元测试 | `test_modern.php` 52 项通过 |
+| CAP 真实联调 | PoW 50/50 → `redeem` 成功 → 服务端 `validate` 返回 `success:true` |
+| 端到端 | 验证通过后成功代理 `httpbin.org/get`，客户端 IP 已被匿名化 |
+| 原版 500 修复 | `wikipedia.org` 由 500 恢复为 200（149KB），无 PHP 错误污染，CSP 头已剥离 |
+| 无回归 | Landing Page、JS / 字体 / SVG 资源、表单 POST 回写功能均正常 |
 
-## 七、许可
+## 八、许可
 
 沿用上游 [miniProxy](https://github.com/joshdick/miniProxy) 的 GNU GPL v3。
