@@ -576,7 +576,8 @@ if (empty($url)) {
                 .muted{color:#9ca3af;font-size:13px;margin-top:12px}
                 .example{color:var(--accent);text-decoration:none}
                 .quote{margin-top:14px;padding:12px;border-left:4px solid #f472b6;background:var(--pink);color:#b91c52;border-radius:6px;font-size:14px}
-                footer{margin-top:16px;font-size:12px;color:#9ca3af;text-align:right}
+                .repo{color:var(--accent);text-decoration:none;font-weight:600}
+                footer{margin-top:16px;padding-top:12px;border-top:1px solid #eef0f3;font-size:12px;color:#9ca3af;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
                 @media (max-width:480px){h1{font-size:18px} .card{padding:18px}}
             </style>
             <script>
@@ -615,7 +616,7 @@ if (empty($url)) {
                 </form>
                 <p class=\"muted\">示例：<a class=\"example\" href=\"" . PROXY_PREFIX . $landingExampleURL . "\">" . PROXY_PREFIX . $landingExampleURL . "</a></p>
                 <div class=\"quote\">一言：<span id=\"quote\">加载中...</span></div>
-                <footer>miniProxy — 简单、快速、易用</footer>
+                <footer><span>miniProxy — 简单、快速、易用</span><a class=\"repo\" href=\"https://github.com/Johnsheng1/miniproxy-plus\" target=\"_blank\" rel=\"noopener noreferrer\">GitHub</a></footer>
             </div>
         </body>
         </html>");
