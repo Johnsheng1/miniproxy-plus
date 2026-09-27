@@ -11,7 +11,7 @@
 |---|---|---|
 | `miniproxy.php` | 原文件（**未改动**） | 原始代理逻辑，作为回退依据 |
 | `miniproxy_captcha.php` | 新增副本 | 带验证闸门的代理入口：CAP 闸门 + 现代网页适配版代理逻辑。
-自 `START CONFIGURATION` 起与 `main` 分支 `miniproxy2.php` 逐字节一致 |
+自 `START CONFIGURATION` 起与 `main` 分支 `miniproxy-plus.php` 逐字节一致 |
 | `captcha/config.php` | 新增 | 集中配置：CAP 地址、有效期、失败限制、超时、路径 |
 | `captcha/gate.php` | 新增 | 闸门核心库：Session 加固、验证状态判断、跳转、服务端校验、防开放重定向、防刷 |
 | `captcha/verify.php` | 新增 | 独立验证页：渲染 `<cap-widget>`，监听 `solve`/`error`，提交本地校验，成功后回源 |
@@ -22,7 +22,7 @@
 副本 `miniproxy_captcha.php` 由两部分拼成：
 
 1. 文件开头 31 行 CAP 闸门调用（`require captcha/gate.php` + `mp_captcha_gate()`）；
-2. 从 `START CONFIGURATION` 起的全部代理逻辑，与 `main` 分支的 `miniproxy2.php`
+2. 从 `START CONFIGURATION` 起的全部代理逻辑，与 `main` 分支的 `miniproxy-plus.php`
    **逐字节一致**（MD5 同为 `b5ff664f06af264a76ae4a59871f9378`）。
 
 也就是说：本分支入口 = **CAP 闸门 + 现代网页适配版代理**，既有人机验证，
@@ -245,7 +245,7 @@ define('CAPTCHA_BASE_PATH', '/proxy');   //不要以 / 结尾
 | 现代网页单元测试 | `test_modern.php` 52 项通过 |
 | CAP 真实联调 | PoW 50/50 → `redeem` 成功 → 服务端 `validate` 返回 `success:true` |
 | 闸门 + 现代改造协同 | 验证通过后成功代理 `wikipedia.org`（原版 500），200 / 149KB，无 PHP 错误污染，CSP 已剥离 |
-| 代理逻辑一致性 | 入口副本自 `START CONFIGURATION` 起与 `main` 分支 `miniproxy2.php` MD5 一致 |
+| 代理逻辑一致性 | 入口副本自 `START CONFIGURATION` 起与 `main` 分支 `miniproxy-plus.php` MD5 一致 |
 
 ---
 

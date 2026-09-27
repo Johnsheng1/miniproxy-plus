@@ -24,19 +24,19 @@ function checkTrue($label, $cond) { check($label, (bool) $cond, true); }
 /* ---------------------------------------------------------------------------
  * A. 纯函数测试
  *
- * miniproxy2.php 的顶层逻辑会尝试解析请求并 die()，不能直接 include。
+ * miniproxy-plus.php 的顶层逻辑会尝试解析请求并 die()，不能直接 include。
  * 因此这里用"读取源码 + 反射重建"的方式，只取被测函数定义执行。
  * --------------------------------------------------------------------------- */
 
-//本测试覆盖两个入口副本：miniproxy2.php（main 分支）与 miniproxy_captcha.php
+//本测试覆盖两个入口副本：miniproxy-plus.php（main 分支）与 miniproxy_captcha.php
 //（feat/captcha-gate 分支）。两个文件自 START CONFIGURATION 起的代理逻辑完全相同，
 //因此下面所有断言对二者都应成立。默认测试当前分支上存在的那个文件。
 $proxyFile = null;
-foreach (["miniproxy2.php", "miniproxy_captcha.php"] as $candidate) {
+foreach (["miniproxy-plus.php", "miniproxy_captcha.php"] as $candidate) {
   if (is_file(__DIR__ . "/" . $candidate)) { $proxyFile = __DIR__ . "/" . $candidate; break; }
 }
 if ($proxyFile === null) {
-  fwrite(STDERR, "未找到待测的代理入口副本（miniproxy2.php 或 miniproxy_captcha.php）
+  fwrite(STDERR, "未找到待测的代理入口副本（miniproxy-plus.php 或 miniproxy_captcha.php）
 ");
   exit(2);
 }
@@ -112,7 +112,7 @@ check('根相对路径',
   $P . 'https://s.com/assets/a.png 1x');
 
 echo "\n=== B. 响应头黑名单（匹配方式与原版一致的正则） ===\n";
-// 复刻 miniproxy2.php 中构造黑名单的代码，确保检测逻辑一致
+// 复刻 miniproxy-plus.php 中构造黑名单的代码，确保检测逻辑一致
 $strip = [
   "Content-Length", "Transfer-Encoding", "Content-Encoding",
   "Content-Security-Policy", "Content-Security-Policy-Report-Only",
