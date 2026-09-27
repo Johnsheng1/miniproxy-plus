@@ -57,7 +57,7 @@ mp_captcha_gate([
 ### 2. 验证页（`captcha/verify.php` 核心）
 
 ```html
-<script src="https://captcha.api.968111.xyz/cap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cap-widget@latest/cap.min.js"></script>
 <cap-widget id="cap"
             data-cap-api-endpoint="https://captcha.api.968111.xyz/api/"></cap-widget>
 ```
@@ -225,7 +225,7 @@ define('CAPTCHA_BASE_PATH', '/proxy');   //不要以 / 结尾
 | 配置项 | 默认值 |
 |---|---|
 | `CAP_API_ENDPOINT` | `https://captcha.api.968111.xyz/api/` |
-| `CAP_JS_URL` | `https://captcha.api.968111.xyz/cap.min.js` |
+| `CAP_JS_URL` | `https://cdn.jsdelivr.net/npm/cap-widget@latest/cap.min.js` | cap-widget 官方 CDN，组件与 CAP 服务端解耦 |
 | `CAPTCHA_VERIFIED_TTL` | `1800` |
 | `CAPTCHA_FAILURE_LIMIT` | `5` 次 |
 | `CAPTCHA_FAILURE_WINDOW` | `300` 秒 |

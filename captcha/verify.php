@@ -55,6 +55,7 @@ $verifyUrl = htmlspecialchars(mp_captcha_verify_url() . '?redirect=' . rawurlenc
   .retry button{background:var(--accent);color:#fff;border:none;padding:9px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600}
   .retry button:hover{filter:brightness(1.05)}
   .hint{margin-top:18px;font-size:12px;color:#9ca3af;line-height:1.6}
+  .footer{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:#9ca3af;text-align:center}
   a{color:var(--accent);text-decoration:none;word-break:break-all}
   .err{background:#fef2f2;border:1px solid #fecaca;color:var(--err);border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:16px;text-align:left}
 </style>
@@ -83,6 +84,8 @@ $verifyUrl = htmlspecialchars(mp_captcha_verify_url() . '?redirect=' . rawurlenc
 
   <p class="hint">验证通过后将自动返回原页面。若长时间无响应，请检查网络后重试。<br>
   来源页面：<a href="<?php echo $verifyUrl; ?>"><?php echo htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8'); ?></a></p>
+
+  <p class="footer"><a href="<?php echo htmlspecialchars(PROXY_GITHUB_URL, ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener noreferrer">miniProxy-plus on GitHub</a></p>
 </div>
 
 <script>

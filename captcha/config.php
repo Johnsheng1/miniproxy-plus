@@ -14,14 +14,21 @@ if (!defined('CAP_API_ENDPOINT')) {
   define('CAP_API_ENDPOINT', 'https://captcha.api.968111.xyz/api/');
 }
 
-//前端组件地址（cap.min.js）
+//前端组件地址（cap-widget 官方 CDN）
+//统一使用 npm 官方源，与 CAP 服务端解耦；组件本身与 API 端点分离，
+//API 地址由上面的 CAP_API_ENDPOINT 单独控制。
 if (!defined('CAP_JS_URL')) {
-  define('CAP_JS_URL', 'https://captcha.api.968111.xyz/cap.min.js');
+  define('CAP_JS_URL', 'https://cdn.jsdelivr.net/npm/cap-widget@latest/cap.min.js');
 }
 
 //服务端二次校验接口（相对 CAP_API_ENDPOINT）
 if (!defined('CAP_VALIDATE_PATH')) {
   define('CAP_VALIDATE_PATH', 'validate');
+}
+
+//项目仓库地址，显示在验证页页脚
+if (!defined('PROXY_GITHUB_URL')) {
+  define('PROXY_GITHUB_URL', 'https://github.com/Johnsheng1/miniproxy-plus');
 }
 
 //是否保留 CAP token 以便后续复用（默认 false：校验即消费）
