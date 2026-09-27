@@ -408,6 +408,136 @@ function proxifySrcset($srcset, $baseURL) {
   return implode(", ", $proxifiedSources); //Recombine the sources with ", "
 }
 
+// ---------------------------------------------------------------------------
+// Bing / Microsoft 专用 URL 解码重写
+//
+// Bing 的搜索结果链接并不直接指向目标站点，而是形如：
+//   https://www.bing.com/ck/a?!&&p=<token>&u=a1<base64>&...
+// 真实网址被 Base64 编码后放在 u=a1... 参数里，由页面 JS 解出再跳转。
+// 图片/视频搜索则把原图地址放在 JSON 的 "murl" 字段里。
+//
+// 代理只重写 href 属性是不够的：JS 读到的仍是编码前的真实地址，
+// 用户一点搜索结果，浏览器就直接跳去了真实站点，等于绕过代理。
+//
+// 这里在服务端把这些值解码出来、套上代理前缀、再编码回去，
+// 使 href 与 JS 读到的内容一致。仅处理 Bing 的这两个已知形态，
+// 不做通用的"猜测脚本里的 URL"，避免误伤其他站点。
+// ---------------------------------------------------------------------------
+
+//Bing URL 参数中使用的编码：标准 base64 与 URL-safe base64 两种都可能出现，
+//且 padding 常被省略。逐个补齐 padding 尝试解码，取第一个成功的结果。
+function mp_bing_b64decode($encoded) {
+  if (!is_string($encoded) || $encoded === "") return null;
+  //只接受 base64 字符集，遇到其他字符直接放弃
+  //用 # 作分隔符：字符类里的 / 会被 / 分隔符误认为正则结束
+  if (!preg_match('#^[A-Za-z0-9+/_-]+$#', $encoded)) return null;
+
+  $len = strlen($encoded);
+  for ($pad = 0; $pad < 3; $pad++) {
+    $candidate = $encoded . str_repeat("=", $pad);
+    //base64 长度必须是 4 的倍数
+    if (strlen($candidate) % 4 !== 0) continue;
+    //URL-safe 变体优先：实测 Bing 的 /ck/a 链接使用的是 -_ 形式
+    //两种变体都试：URL-safe（-_）转成标准（+/），以及原样按标准 base64 解。
+    //顺序无关紧要，因为 strtr 只替换实际存在的字符。
+    foreach ([["-_", "+/"], ["", ""]] as $pair) {
+      $normalized = strtr($candidate, $pair[0], $pair[1]);
+      $decoded = base64_decode($normalized, true); //严格模式，非法字符返回 false
+      if ($decoded === false || $decoded === "") continue;
+      //必须是合法 UTF-8，否则视为解码失败
+      if (!mb_check_encoding($decoded, "UTF-8")) continue;
+      return $decoded;
+    }
+  }
+  return null;
+}
+
+//判断解码结果是否是"值得重写"的 URL。
+//这一步是防止误判的关键：像 "a1dGVzdA" 这样的参数能解出 "test"，
+//但它不是 URL，重写它只会把参数弄坏。
+function mp_bing_is_rewritable_url($decoded) {
+  if (!is_string($decoded) || $decoded === "") return false;
+  //控制字符与空白一律拒绝
+  if (preg_match('/[ -]/', $decoded)) return false;
+  //绝对地址：scheme://host
+  if (preg_match('#^https?://[A-Za-z0-9.\-]+#i', $decoded)) return true;
+  //站内路径：/path
+  if (preg_match('#^/[A-Za-z0-9\-._~%/?=&]#', $decoded)) return true;
+  return false;
+}
+
+//把解码出的 URL 套上代理前缀。绝对地址与相对路径都走 rel2abs 统一处理。
+function mp_bing_proxify($decodedURL, $baseURL) {
+  if (preg_match('#^https?://#i', $decodedURL)) {
+    return PROXY_PREFIX . $decodedURL;
+  }
+  return PROXY_PREFIX . rel2abs($decodedURL, $baseURL);
+}
+
+//把代理后的 URL 重新编码为 URL-safe base64 并去掉 padding，
+//与 Bing 原始形态保持一致，避免长度或字符集变化引起 JS 解析差异。
+function mp_bing_b64encode($url) {
+  $encoded = base64_encode($url);
+  return rtrim(strtr($encoded, "+/", "-_"), "=");
+}
+
+//处理整段 HTML 中的 Bing u=a1... 参数。
+//仅在 HTML 内容里出现 bing.com 的 ck/a 链接时才动手，其他站点零影响。
+function proxifyBingURLs($html, $baseURL) {
+  if (!is_string($html) || $html === "") return $html;
+  //快速退出：没有 Bing 的 ck/a 链接就不处理
+  if (strpos($html, "/ck/a") === false) return $html;
+
+  return preg_replace_callback(
+    '/((?:amp;|&|\?)u=a)(\d)([A-Za-z0-9_\-]+)/',
+    function ($matches) use ($baseURL) {
+      $prefix = $matches[1]; //形如 "&u=a" / "&amp;u=a"
+      $schemeDigit = $matches[2]; //Bing 的版本号，固定为 1
+      $encoded = $matches[3];
+
+      $decoded = mp_bing_b64decode($encoded);
+      if ($decoded === null) return $matches[0]; //解码失败，保持原样
+      if (!mp_bing_is_rewritable_url($decoded)) return $matches[0]; //不是 URL，保持原样
+
+      $proxied = mp_bing_proxify($decoded, $baseURL);
+      $reEncoded = mp_bing_b64encode($proxied);
+
+      return $prefix . $schemeDigit . $reEncoded;
+    },
+    $html
+  );
+}
+
+//处理 Bing 图片/视频搜索 JSON 中的 "murl" 字段（原图地址）。
+function proxifyBingMediaURLs($html, $baseURL) {
+  if (!is_string($html) || $html === "") return $html;
+  //只在出现 murl 字段时处理
+  if (strpos($html, "murl") === false) return $html;
+
+  return preg_replace_callback(
+    '/("murl"\s*:\s*")([^"]*)(")/',
+    function ($matches) use ($baseURL) {
+      $lead = $matches[1];
+      $url = $matches[2];
+      $trail = $matches[3];
+
+      if ($url === "") return $matches[0];
+      //data: URI 与已是代理地址的不动
+      if (stripos($url, "data:") === 0) return $matches[0];
+      if (strpos($url, PROXY_PREFIX) === 0) return $matches[0];
+
+      $proxied = preg_match('#^https?://#i', $url)
+        ? PROXY_PREFIX . $url
+        : PROXY_PREFIX . rel2abs($url, $baseURL);
+
+      //JSON 字符串里需要转义反斜杠，避免破坏 JSON 结构
+      $escaped = str_replace("\\", "\\\\", $proxied);
+      return $lead . $escaped . $trail;
+    },
+    $html
+  );
+}
+
 //Extract and sanitize the requested URL, handling cases where forms have been rewritten to point to the proxy.
 if (isset($_POST["miniProxyFormAction"])) {
   $url = $_POST["miniProxyFormAction"];
@@ -880,7 +1010,13 @@ if (stripos($contentType, "text/html") !== false) {
 
   }
 
-  echo "<!-- Proxified page constructed by miniProxy -->\n" . $doc->saveHTML();
+  //DOM 重写完成后再处理 Bing 的编码 URL。
+  //必须在 saveHTML() 之后：DOMXPath 看不到 JS 里的 u 参数和 JSON 里的 murl 字段，
+  //这两个位置只能靠对最终 HTML 做文本替换。
+  $finalHTML = $doc->saveHTML();
+  $finalHTML = proxifyBingURLs($finalHTML, $url);
+  $finalHTML = proxifyBingMediaURLs($finalHTML, $url);
+  echo "<!-- Proxified page constructed by miniProxy -->\n" . $finalHTML;
 } else if (stripos($contentType, "text/css") !== false) { //This is CSS, so proxify url() references.
   echo proxifyCSS($responseBody, $url);
 } else { //This isn't a web page or CSS, so serve unmodified through the proxy with the correct headers (images, JavaScript, etc.)

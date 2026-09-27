@@ -28,7 +28,21 @@ function checkTrue($label, $cond) { check($label, (bool) $cond, true); }
  * 因此这里用"读取源码 + 反射重建"的方式，只取被测函数定义执行。
  * --------------------------------------------------------------------------- */
 
-$src = file_get_contents(__DIR__ . '/miniproxy-plus.php');
+//本测试覆盖两个入口副本：miniproxy-plus.php（main 分支）与 miniproxy_captcha.php
+//（feat/captcha-gate 分支）。两个文件自 START CONFIGURATION 起的代理逻辑完全相同，
+//因此下面所有断言对二者都应成立。按顺序探测当前分支上存在的那个文件。
+$proxyFile = null;
+foreach (["miniproxy2.php", "miniproxy-plus.php", "miniproxy_captcha.php"] as $candidate) {
+  if (is_file(__DIR__ . "/" . $candidate)) { $proxyFile = __DIR__ . "/" . $candidate; break; }
+}
+if ($proxyFile === null) {
+  fwrite(STDERR, "未找到待测的代理入口副本
+");
+  exit(2);
+}
+echo "被测文件: " . basename($proxyFile) . "
+";
+$src = file_get_contents($proxyFile);
 
 /** 取出某个函数的完整源码并 eval 出来，返回其 ReflectionFunction */
 function extract_function($src, $signature) {
@@ -183,6 +197,125 @@ checkTrue('绝对 URL 也走代理', strpos($src, 'preg_match("/^https?:\\/\\//i
 checkTrue('curl 连接超时', strpos($src, 'CURLOPT_CONNECTTIMEOUT') !== false);
 checkTrue('curl 总超时', strpos($src, 'CURLOPT_TIMEOUT, 30') !== false);
 checkTrue('关闭 display_errors', strpos($src, 'ini_set("display_errors", "0")') !== false);
+
+// ---------------------------------------------------------------------------
+// E. Bing URL 重写专项
+//
+// Bing 的搜索结果链接把真实网址 Base64 编码后放在 u=a1... 参数里，
+// 图片/视频搜索则放在 JSON 的 "murl" 字段。这两处 DOMXPath 都看不到，
+// 只能对最终 HTML 做文本替换。
+//
+// 用例分两类：
+//   1. 从真实 Bing 页面采集的样本，必须被正确重写；
+//   2. 各种"看起来像但其实不是"的输入，必须原样保留（防止误伤其他站点）。
+// ---------------------------------------------------------------------------
+
+echo "\n=== E. Bing URL 重写专项 ===\n";
+
+$bingFnSignatures = [
+  'mp_bing_b64decode'         => 'function mp_bing_b64decode($encoded)',
+  'mp_bing_is_rewritable_url' => 'function mp_bing_is_rewritable_url($decoded)',
+  'mp_bing_proxify'           => 'function mp_bing_proxify($decodedURL, $baseURL)',
+  'mp_bing_b64encode'         => 'function mp_bing_b64encode($url)',
+  'proxifyBingURLs'           => 'function proxifyBingURLs($html, $baseURL)',
+  'proxifyBingMediaURLs'      => 'function proxifyBingMediaURLs($html, $baseURL)',
+];
+
+//与 proxifySrcset 同理：这些函数依赖 PROXY_PREFIX 常量和 rel2abs()，
+//必须先从源码中取出定义再 eval，不能在测试进程里重新声明。
+$hasBingSupport = strpos($src, 'function proxifyBingURLs') !== false;
+if ($hasBingSupport) {
+  foreach ($bingFnSignatures as $fnName => $signature) {
+    try {
+      extract_function($src, $signature);
+      checkTrue("函数定义可提取: $fnName", function_exists($fnName));
+    } catch (RuntimeException $e) {
+      checkTrue("函数定义可提取: $fnName", false);
+    }
+  }
+  if (!defined('PROXY_PREFIX')) {
+    define('PROXY_PREFIX', 'http://p/x.php?');
+  }
+
+echo "\n=== E1. base64 解码（标准 / URL-safe / 无 padding） ===\n";
+//以下样本均来自真实 Bing 搜索页
+  check('标准 base64 含斜杠',
+    mp_bing_b64decode('aHR0cHM6Ly9naXRodWIuY29tLw'), 'https://github.com/');
+  check('URL-safe 含下划线',
+    mp_bing_b64decode('L2ltYWdlcy9zZWFyY2g_cT1naXRodWI'), '/images/search?q=github');
+  check('空串返回 null', mp_bing_b64decode(''), null);
+  check('非法字符返回 null', mp_bing_b64decode('abc!@#'), null);
+  check('乱码返回 null', mp_bing_b64decode('zzzzzzzz'), null);
+  check('非 UTF-8 字节返回 null', mp_bing_b64decode('gA'), null);
+
+echo "\n=== E2. URL 判定（防误判的核心闸门） ===\n";
+  check('绝对 URL 接受', mp_bing_is_rewritable_url('https://github.com/'), true);
+  check('站内路径接受', mp_bing_is_rewritable_url('/images/search?q=x'), true);
+  //关键反例：这些字符串能被 base64 解出来，但不是 URL，重写只会弄坏参数
+  check('解出普通单词时拒绝', mp_bing_is_rewritable_url('test'), false);
+  check('解出 hello 时拒绝', mp_bing_is_rewritable_url('hello'), false);
+  check('解出 ABC 时拒绝', mp_bing_is_rewritable_url('ABC'), false);
+  check('空串拒绝', mp_bing_is_rewritable_url(''), false);
+  check('控制字符拒绝', mp_bing_is_rewritable_url("/a\nb"), false);
+  check('无前导斜杠的路径拒绝', mp_bing_is_rewritable_url('images/a.png'), false);
+
+echo "\n=== E3. 编码往返 ===\n";
+  $roundtrip = 'http://p/x.php?https://github.com/';
+  check('解码(编码(x)) == x', mp_bing_b64decode(mp_bing_b64encode($roundtrip)), $roundtrip);
+  check('重新编码后无 padding', strpos(mp_bing_b64encode($roundtrip), '='), false);
+  check('重新编码后不含标准字符 +/',
+    strpos(mp_bing_b64encode('http://p/x.php?https://a.com/?q=1'), '+'), false);
+
+echo "\n=== E4. 重写 HTML 中的 u=a1 ===\n";
+  //真实 Bing ck/a 链接形态（& 已被 DOM 转义为 &amp;）
+  $realBingLink = '<a href="http://p/x.php?https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly9naXRodWIuY29tLw">r</a>';
+  $rewritten = proxifyBingURLs($realBingLink, 'https://www.bing.com/search?q=github');
+  checkTrue('u 参数已被重写为代理地址',
+    strpos($rewritten, 'u=a1aHR0cDovL3AveC5waHA_aHR0cHM6Ly9naXRodWIuY29tLw') !== false);
+  checkTrue('同链接其他参数未被破坏', strpos($rewritten, 'p=abc') !== false);
+  checkTrue('链接其余部分完整', strpos($rewritten, 'ck/a?!') !== false);
+
+  //未转义 & 的形态也要处理
+  $plainLink = '<a href="http://p/x.php?https://www.bing.com/ck/a?!&p=abc&u=a1aHR0cHM6Ly9naXRodWIuY29tLw">r</a>';
+  checkTrue('未转义 & 形态同样处理',
+    strpos(proxifyBingURLs($plainLink, 'https://www.bing.com/'), 'u=a1aHR0cDovL3AveC5waHA') !== false);
+
+echo "\n=== E5. 不应被改写的情形（防止误伤） ===\n";
+  //没有 ck/a 的页面：零影响
+  $otherSite = '<a href="https://example.com/?u=a1aHR0cHM6Ly9naXRodWIuY29tLw">x</a>';
+  check('非 Bing 页面完全不动', proxifyBingURLs($otherSite, 'https://example.com/'), $otherSite);
+  //解码失败：保留原值，不能把链接弄坏
+  $undecodable = '<a href="http://p/x.php?https://www.bing.com/ck/a?!&u=a1zzzzzz">x</a>';
+  check('解码失败保持原样', proxifyBingURLs($undecodable, 'https://www.bing.com/'), $undecodable);
+  //解出来了但不是 URL：保留原值
+  $notAURL = '<a href="http://p/x.php?https://www.bing.com/ck/a?!&u=a1dGVzdA">x</a>';
+  check('解出非 URL 保持原样', proxifyBingURLs($notAURL, 'https://www.bing.com/'), $notAURL);
+  $notAURL2 = '<a href="http://p/x.php?https://www.bing.com/ck/a?!&u=a1aGVsbG8">x</a>';
+  check('解出 hello 保持原样', proxifyBingURLs($notAURL2, 'https://www.bing.com/'), $notAURL2);
+
+echo "\n=== E6. murl（图片/视频搜索原图地址） ===\n";
+  $json = '{"murl":"https://www.rd.com/a.jpg","purl":"https://x.com"}';
+  $jsonOut = proxifyBingMediaURLs($json, 'https://www.bing.com/images/search?q=cat');
+  checkTrue('murl 绝对地址已重写', strpos($jsonOut, 'x.php?https://www.rd.com/a.jpg') !== false);
+  checkTrue('JSON 其余字段未被破坏', strpos($jsonOut, '"purl":"https://x.com"}') !== false);
+  check('data: URI 不动',
+    proxifyBingMediaURLs('{"murl":"data:image/png;base64,AAA"}', 'https://b/'),
+    '{"murl":"data:image/png;base64,AAA"}');
+  check('空 murl 不动', proxifyBingMediaURLs('{"murl":""}', 'https://b/'), '{"murl":""}');
+  check('站内相对路径 murl 也重写',
+    strpos(proxifyBingMediaURLs('{"murl":"/img/a.jpg"}', 'https://www.bing.com/i'), 'x.php?https://www.bing.com/img/a.jpg') !== false,
+    true);
+
+echo "\n=== E7. 输出流程已接入 ===\n";
+  checkTrue('DOM 输出后调用 proxifyBingURLs',
+    strpos($src, '$finalHTML = proxifyBingURLs(') !== false);
+  checkTrue('DOM 输出后调用 proxifyBingMediaURLs',
+    strpos($src, '$finalHTML = proxifyBingMediaURLs(') !== false);
+  checkTrue('仍在 saveHTML() 之后执行',
+    strpos($src, '$finalHTML = $doc->saveHTML();') !== false);
+} else {
+  echo "  (源码中未包含 Bing 重写逻辑，跳过 E 组断言)\n";
+}
 
 echo "\n========================================\n";
 echo "通过 $pass 项，失败 $fail 项\n";
