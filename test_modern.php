@@ -13,10 +13,14 @@ error_reporting(E_ALL & ~E_DEPRECATED);
 $pass = 0; $fail = 0; $errors = [];
 function check($label, $got, $expect) {
   global $pass, $fail, $errors;
-  if ($got === $expect) { $pass++; echo "  [OK]   $label\n"; }
+  if ($got === $expect) { $pass++; echo "  [OK]   $label
+"; }
   else {
     $fail++; $errors[] = $label;
-    echo "  [FAIL] $label\n         expect: " . var_export($expect, true) . "\n         got:    " . var_export($got, true) . "\n";
+    echo "  [FAIL] $label
+         expect: " . var_export($expect, true) . "
+         got:    " . var_export($got, true) . "
+";
   }
 }
 function checkTrue($label, $cond) { check($label, (bool) $cond, true); }
@@ -62,7 +66,8 @@ function extract_function($src, $signature) {
   return new ReflectionFunction($name);
 }
 
-echo "=== A. proxifySrcset（原版在此 fatal） ===\n";
+echo "=== A. proxifySrcset（原版在此 fatal） ===
+";
 $reflProxifySrcset = extract_function($src, 'function proxifySrcset($srcset, $baseURL)');
 $reflRel2abs      = extract_function($src, 'function rel2abs($rel, $base)');
 $rel2abs          = function ($rel, $base) use ($reflRel2abs) { return $reflRel2abs->invoke($rel, $base); };
@@ -111,7 +116,9 @@ check('根相对路径',
   $ps('/assets/a.png 1x', 'https://s.com/deep/page'),
   $P . 'https://s.com/assets/a.png 1x');
 
-echo "\n=== B. 响应头黑名单（匹配方式与原版一致的正则） ===\n";
+echo "
+=== B. 响应头黑名单（匹配方式与原版一致的正则） ===
+";
 // 复刻 miniproxy-plus.php 中构造黑名单的代码，确保检测逻辑一致
 $strip = [
   "Content-Length", "Transfer-Encoding", "Content-Encoding",
@@ -160,7 +167,9 @@ foreach ($should_keep as $h) {
   checkTrue("保留: " . substr($h, 0, 42), !preg_match($pattern, $h));
 }
 
-echo "\n=== C. 编码规范化（消除 PHP 8.2 Deprecated） ===\n";
+echo "
+=== C. 编码规范化（消除 PHP 8.2 Deprecated） ===
+";
 $reflEnc = null;
 try {
   $reflEnc = extract_function($src, 'function mb_detect_encoding(');
@@ -180,7 +189,9 @@ checkTrue('源文件不再调用 mb_convert_encoding(..., "HTML-ENTITIES", ...)'
   strpos($src, 'mb_convert_encoding($responseBody, "HTML-ENTITIES"') === false);
 checkTrue('源文件改用 mb_encode_numericentity', strpos($src, 'mb_encode_numericentity') !== false);
 
-echo "\n=== D. 关键改造是否落在源码中 ===\n";
+echo "
+=== D. 关键改造是否落在源码中 ===
+";
 checkTrue('剥离 CSP', strpos($src, '"Content-Security-Policy"') !== false);
 checkTrue('剥离 HSTS', strpos($src, '"Strict-Transport-Security"') !== false);
 checkTrue('移除 integrity', strpos($src, 'removeAttribute("integrity")') !== false);
@@ -210,7 +221,9 @@ checkTrue('关闭 display_errors', strpos($src, 'ini_set("display_errors", "0")'
 //   2. 各种"看起来像但其实不是"的输入，必须原样保留（防止误伤其他站点）。
 // ---------------------------------------------------------------------------
 
-echo "\n=== E. Bing URL 重写专项 ===\n";
+echo "
+=== E. Bing URL 重写专项 ===
+";
 
 $bingFnSignatures = [
   'mp_bing_b64decode'         => 'function mp_bing_b64decode($encoded)',
@@ -237,7 +250,9 @@ if ($hasBingSupport) {
     define('PROXY_PREFIX', 'http://p/x.php?');
   }
 
-echo "\n=== E1. base64 解码（标准 / URL-safe / 无 padding） ===\n";
+echo "
+=== E1. base64 解码（标准 / URL-safe / 无 padding） ===
+";
 //以下样本均来自真实 Bing 搜索页
   check('标准 base64 含斜杠',
     mp_bing_b64decode('aHR0cHM6Ly9naXRodWIuY29tLw'), 'https://github.com/');
@@ -248,7 +263,9 @@ echo "\n=== E1. base64 解码（标准 / URL-safe / 无 padding） ===\n";
   check('乱码返回 null', mp_bing_b64decode('zzzzzzzz'), null);
   check('非 UTF-8 字节返回 null', mp_bing_b64decode('gA'), null);
 
-echo "\n=== E2. URL 判定（防误判的核心闸门） ===\n";
+echo "
+=== E2. URL 判定（防误判的核心闸门） ===
+";
   check('绝对 URL 接受', mp_bing_is_rewritable_url('https://github.com/'), true);
   check('站内路径接受', mp_bing_is_rewritable_url('/images/search?q=x'), true);
   //关键反例：这些字符串能被 base64 解出来，但不是 URL，重写只会弄坏参数
@@ -256,17 +273,22 @@ echo "\n=== E2. URL 判定（防误判的核心闸门） ===\n";
   check('解出 hello 时拒绝', mp_bing_is_rewritable_url('hello'), false);
   check('解出 ABC 时拒绝', mp_bing_is_rewritable_url('ABC'), false);
   check('空串拒绝', mp_bing_is_rewritable_url(''), false);
-  check('控制字符拒绝', mp_bing_is_rewritable_url("/a\nb"), false);
+  check('控制字符拒绝', mp_bing_is_rewritable_url("/a
+b"), false);
   check('无前导斜杠的路径拒绝', mp_bing_is_rewritable_url('images/a.png'), false);
 
-echo "\n=== E3. 编码往返 ===\n";
+echo "
+=== E3. 编码往返 ===
+";
   $roundtrip = 'http://p/x.php?https://github.com/';
   check('解码(编码(x)) == x', mp_bing_b64decode(mp_bing_b64encode($roundtrip)), $roundtrip);
   check('重新编码后无 padding', strpos(mp_bing_b64encode($roundtrip), '='), false);
   check('重新编码后不含标准字符 +/',
     strpos(mp_bing_b64encode('http://p/x.php?https://a.com/?q=1'), '+'), false);
 
-echo "\n=== E4. 重写 HTML 中的 u=a1 ===\n";
+echo "
+=== E4. 重写 HTML 中的 u=a1 ===
+";
   //真实 Bing ck/a 链接形态（& 已被 DOM 转义为 &amp;）
   $realBingLink = '<a href="http://p/x.php?https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly9naXRodWIuY29tLw">r</a>';
   $rewritten = proxifyBingURLs($realBingLink, 'https://www.bing.com/search?q=github');
@@ -280,7 +302,9 @@ echo "\n=== E4. 重写 HTML 中的 u=a1 ===\n";
   checkTrue('未转义 & 形态同样处理',
     strpos(proxifyBingURLs($plainLink, 'https://www.bing.com/'), 'u=a1aHR0cDovL3AveC5waHA') !== false);
 
-echo "\n=== E5. 不应被改写的情形（防止误伤） ===\n";
+echo "
+=== E5. 不应被改写的情形（防止误伤） ===
+";
   //没有 ck/a 的页面：零影响
   $otherSite = '<a href="https://example.com/?u=a1aHR0cHM6Ly9naXRodWIuY29tLw">x</a>';
   check('非 Bing 页面完全不动', proxifyBingURLs($otherSite, 'https://example.com/'), $otherSite);
@@ -293,7 +317,9 @@ echo "\n=== E5. 不应被改写的情形（防止误伤） ===\n";
   $notAURL2 = '<a href="http://p/x.php?https://www.bing.com/ck/a?!&u=a1aGVsbG8">x</a>';
   check('解出 hello 保持原样', proxifyBingURLs($notAURL2, 'https://www.bing.com/'), $notAURL2);
 
-echo "\n=== E6. murl（图片/视频搜索原图地址） ===\n";
+echo "
+=== E6. murl（图片/视频搜索原图地址） ===
+";
   $json = '{"murl":"https://www.rd.com/a.jpg","purl":"https://x.com"}';
   $jsonOut = proxifyBingMediaURLs($json, 'https://www.bing.com/images/search?q=cat');
   checkTrue('murl 绝对地址已重写', strpos($jsonOut, 'x.php?https://www.rd.com/a.jpg') !== false);
@@ -306,7 +332,9 @@ echo "\n=== E6. murl（图片/视频搜索原图地址） ===\n";
     strpos(proxifyBingMediaURLs('{"murl":"/img/a.jpg"}', 'https://www.bing.com/i'), 'x.php?https://www.bing.com/img/a.jpg') !== false,
     true);
 
-echo "\n=== E7. 输出流程已接入 ===\n";
+echo "
+=== E7. 输出流程已接入 ===
+";
   checkTrue('DOM 输出后调用 proxifyBingURLs',
     strpos($src, '$finalHTML = proxifyBingURLs(') !== false);
   checkTrue('DOM 输出后调用 proxifyBingMediaURLs',
@@ -314,10 +342,135 @@ echo "\n=== E7. 输出流程已接入 ===\n";
   checkTrue('仍在 saveHTML() 之后执行',
     strpos($src, '$finalHTML = $doc->saveHTML();') !== false);
 } else {
-  echo "  (源码中未包含 Bing 重写逻辑，跳过 E 组断言)\n";
+  echo "  (源码中未包含 Bing 重写逻辑，跳过 E 组断言)
+";
 }
 
-echo "\n========================================\n";
-echo "通过 $pass 项，失败 $fail 项\n";
-if ($fail > 0) { echo "失败项：" . implode("、", $errors) . "\n"; }
+
+// ---------------------------------------------------------------------------
+// F. HLS / DASH 流媒体播放列表重写
+//
+// 现代视频站几乎不用直接 mp4，而是 HLS（.m3u8）或 DASH（.mpd）自适应流。
+// 播放列表里引用相对路径，播放器按列表自身 URL 解析；经代理后拿不到子列表
+// 和视频分片，表现为视频无法播放。
+//
+// 样本结构来自公开测试流 test-streams.mux.dev 的真实响应。
+// ---------------------------------------------------------------------------
+
+echo "
+=== F. HLS / DASH 流媒体播放列表重写 ===
+";
+
+$hlsFns = [
+  'isHLSPlaylist'        => 'function isHLSPlaylist($contentType, $body)',
+  'isDASHManifest'       => 'function isDASHManifest($contentType, $body)',
+  'mp_proxify_media_url' => 'function mp_proxify_media_url($u, $baseURL)',
+  'proxifyHLS'           => 'function proxifyHLS($body, $baseURL)',
+  'proxifyDASH'          => 'function proxifyDASH($body, $baseURL)',
+];
+
+$hasHLSSupport = strpos($src, 'function proxifyHLS') !== false;
+if ($hasHLSSupport) {
+  foreach ($hlsFns as $fnName => $signature) {
+    try {
+      extract_function($src, $signature);
+      checkTrue("函数定义可提取: $fnName", function_exists($fnName));
+    } catch (RuntimeException $e) {
+      checkTrue("函数定义可提取: $fnName", false);
+    }
+  }
+  if (!defined('PROXY_PREFIX')) {
+    define('PROXY_PREFIX', 'http://p/x.php?');
+  }
+
+echo "
+=== F1. 播放列表识别 ===
+";
+  check('mpegurl 内容类型识别', isHLSPlaylist('audio/mpegurl', 'x'), true);
+  check('x-mpegurl 内容类型识别', isHLSPlaylist('application/x-mpegurl', 'x'), true);
+  check('vnd.apple.mpegurl 识别', isHLSPlaylist('application/vnd.apple.mpegurl', 'x'), true);
+  check('text/plain 但内容是 M3U 也识别', isHLSPlaylist('text/plain', '#EXTM3U'), true);
+  check('普通 HTML 不误判', isHLSPlaylist('text/html', '<html></html>'), false);
+  check('MP4 不误判为 HLS', isHLSPlaylist('video/mp4', 'x'), false);
+  check('dash+xml 识别', isDASHManifest('application/dash+xml', 'x'), true);
+  check('MPD 内容识别', isDASHManifest('text/xml', '<MPD></MPD>'), true);
+  check('普通 HTML 不误判为 DASH', isDASHManifest('text/html', '<html></html>'), false);
+
+echo "
+=== F2. 主播放列表重写（真实结构样本） ===
+";
+  $master = '#EXTM3U
+' . '#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2149280,RESOLUTION=1280x720,NAME="720"
+' . 'url_0/193039199_mp4_h264_aac_hd_7.m3u8
+' . '#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=246440,RESOLUTION=320x184,NAME="240"
+' . 'url_2/193039199_mp4_h264_aac_ld_7.m3u8
+' . '#EXT-X-ENDLIST
+';
+  $out = proxifyHLS($master, 'https://cdn.example.com/hls/index.m3u8');
+  checkTrue('注释行 #EXTM3U 原样保留', strpos($out, '#EXTM3U') === 0);
+  checkTrue('STREAM-INF 属性行未被破坏', strpos($out, 'RESOLUTION=1280x720,NAME="720"') !== false);
+  checkTrue('相对子列表已重写', strpos($out, 'x.php?https://cdn.example.com/hls/url_0/193039199_mp4_h264_aac_hd_7.m3u8') !== false);
+  checkTrue('第二个码率子列表也已重写', strpos($out, 'x.php?https://cdn.example.com/hls/url_2/193039199_mp4_h264_aac_ld_7.m3u8') !== false);
+  checkTrue('结尾标签保留', strpos($out, '#EXT-X-ENDLIST') !== false);
+
+echo "
+=== F3. 子播放列表重写（视频分片） ===
+";
+  $sub = '#EXTM3U
+' . '#EXT-X-VERSION:3
+' . '#EXT-X-TARGETDURATION:10
+' . '#EXTINF:10.000,
+' . 'url_462/193039199_mp4_h264_aac_hd_7.ts
+' . '#EXTINF:10.000,
+' . 'url_463/193039199_mp4_h264_aac_hd_7.ts
+';
+  $out2 = proxifyHLS($sub, 'https://cdn.example.com/hls/url_0/media.m3u8');
+  checkTrue('EXTINF 行保留', strpos($out2, '#EXTINF:10.000,') !== false);
+  checkTrue('分片已重写', strpos($out2, 'x.php?https://cdn.example.com/hls/url_0/url_462/193039199_mp4_h264_aac_hd_7.ts') !== false);
+  checkTrue('第二个分片已重写', strpos($out2, 'x.php?https://cdn.example.com/hls/url_0/url_463/193039199_mp4_h264_aac_hd_7.ts') !== false);
+
+echo "
+=== F4. 加密流密钥（EXT-X-KEY） ===
+";
+  $key = '#EXT-X-KEY:METHOD=AES-128,URI="https://keys.example.com/k.key",IV=0x1234
+';
+  $out3 = proxifyHLS($key, 'https://cdn.example.com/hls/index.m3u8');
+  checkTrue('KEY 行的 METHOD 保留', strpos($out3, 'METHOD=AES-128') !== false);
+  checkTrue('KEY 行的 IV 保留', strpos($out3, 'IV=0x1234') !== false);
+  checkTrue('KEY 行的 URI 已重写', strpos($out3, 'x.php?https://keys.example.com/k.key') !== false);
+
+echo "
+=== F5. 绝对地址与边界情况 ===
+";
+  $abs = proxifyHLS('https://other.com/a.ts' . "
+", 'https://cdn.example.com/hls/index.m3u8');
+  checkTrue('绝对地址分片也走代理', strpos($abs, 'x.php?https://other.com/a.ts') !== false);
+  check('空播放列表返回空', proxifyHLS('', 'https://a/'), '');
+  check('非字符串安全返回', proxifyHLS(null, 'https://a/'), null);
+  check('仅注释的列表不被破坏', proxifyHLS('#EXTM3U' . "
+", 'https://a/'), '#EXTM3U' . "
+");
+  check('data: 地址原样返回', mp_proxify_media_url('data:video/mp4,x', 'https://a/'), 'data:video/mp4,x');
+  check('空地址返回空', mp_proxify_media_url('', 'https://a/'), '');
+
+echo "
+=== F6. DASH 清单 ===
+";
+  $mpd = '<?xml?><MPD><BaseURL>https://cdn.example.com/dash/</BaseURL></MPD>';
+  $outd = proxifyDASH($mpd, 'https://cdn.example.com/dash/manifest.mpd');
+  checkTrue('BaseURL 已重写', strpos($outd, 'x.php?https://cdn.example.com/dash/') !== false);
+  checkTrue('XML 标签结构保留', strpos($outd, '<BaseURL>') !== false && strpos($outd, '</BaseURL>') !== false);
+
+echo "
+=== F7. 输出流程已接入 ===
+";
+  checkTrue('HLS 分支已接入输出流程', strpos($src, 'isHLSPlaylist($contentType, $responseBody)') !== false);
+  checkTrue('DASH 分支已接入输出流程', strpos($src, 'isDASHManifest($contentType, $responseBody)') !== false);
+  checkTrue('HLS 分支位于 CSS 分支之前',
+    strpos($src, 'isHLSPlaylist($contentType') < strpos($src, 'stripos($contentType, "text/css")'));
+} else {
+  echo "  (源码中未包含 HLS/DASH 重写逻辑，跳过 F 组断言)
+";
+}
+
 exit($fail === 0 ? 0 : 1);

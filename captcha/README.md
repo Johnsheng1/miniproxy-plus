@@ -33,6 +33,7 @@
 - CSP / HSTS / COOP / COEP / Alt-Svc 等响应头透传
 - `data-src`、`data-srcset`、`imagesrcset`、`integrity`、`nonce`、`<base href>`
 - `fetch` / `sendBeacon` / `window.open` 的客户端改写
+- HLS（.m3u8）/ DASH（.mpd）播放列表的相对地址重写，修复视频无法播放
 - PHP 8.2 `mb_convert_encoding()` 废弃警告、`display_errors` 污染、cURL 超时
 
 原始文件 `miniproxy.php` 在两个分支上均**未做任何修改**，可作为回退依据。

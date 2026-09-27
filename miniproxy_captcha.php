@@ -555,6 +555,114 @@ function proxifyBingMediaURLs($html, $baseURL) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// HLS / DASH 流媒体播放列表重写
+//
+// 问题：现代视频站（包括大量被墙站点）不使用直接 mp4，而是用 HLS（.m3u8）
+// 或 DASH（.mpd）自适应流。播放列表里引用的是相对路径：
+//
+//   #EXT-X-STREAM-INF:BANDWIDTH=2149280,RESOLUTION=1280x720,NAME="720"
+//   url_0/193039199_mp4_h264_aac_hd_7.m3u8
+//
+// 播放器会"按播放列表自身的 URL"解析这些相对路径。经过代理后列表地址
+// 形如 https://proxy/miniproxy.php?https://cdn.example.com/path/list.m3u8，
+// 播放器据此解析出的地址并不是它真正需要的那个，于是拿不到子列表和
+// 视频分片，表现为视频卡在加载、无法播放或只能播放几秒。
+//
+// HTML 的 <script>/<img> 等由上面的 DOM 重写处理，JS 里的 URL 由注入的
+// fetch/XHR patch 兜底，但 m3u8/mpd 是纯文本、不走 DOM 也不走 fetch 的
+// 特殊格式，必须在服务端单独处理。
+//
+// 处理方式：只重写"可能是 URL 的行"，保持注释行、标签行原样，避免破坏
+// 播放列表语法。
+// ---------------------------------------------------------------------------
+
+//判断是否为 HLS 播放列表内容（.m3u8）
+function isHLSPlaylist($contentType, $body) {
+  //内容类型：常见的几种写法
+  if (stripos($contentType, 'mpegurl') !== false) return true;
+  if (stripos($contentType, 'x-mpegurl') !== false) return true;
+  if (stripos($contentType, 'vnd.apple.mpegurl') !== false) return true;
+  //部分 CDN 会返回 text/plain 或 application/octet-stream，靠内容特征判断
+  if (is_string($body) && strpos($body, '#EXTM3U') === 0) return true;
+  //参考实现允许前面有 BOM 或空白
+  if (is_string($body) && preg_match('/^[ï»¿]*\s*#EXTM3U/m', $body)) return true;
+  return false;
+}
+
+//判断是否为 DASH 清单（.mpd，XML 格式）
+function isDASHManifest($contentType, $body) {
+  if (stripos($contentType, 'dash+xml') !== false) return true;
+  if (is_string($body) && strpos($body, '<MPD') !== false) return true;
+  return false;
+}
+
+//把单条 URL 套上代理前缀。绝对地址直接前缀，相对地址先经 rel2abs 解析。
+function mp_proxify_media_url($u, $baseURL) {
+  if ($u === '') return $u;
+  if (stripos($u, 'data:') === 0) return $u;
+  if (preg_match('#^https?://#i', $u)) return PROXY_PREFIX . $u;
+  return PROXY_PREFIX . rel2abs($u, $baseURL);
+}
+
+//重写 HLS 播放列表。
+//
+// HLS 规范里一行的含义由首字符决定：
+//   #   注释行，原样保留（其中 URI="..." 属性另行重写）
+//   空行 原样保留
+//   其他 按规范就是一个 URI（子播放列表或视频分片地址）
+//
+// 刻意用简单的字符判断而非复杂正则：既避免分隔符与字符类冲突导致正则
+// 悄悄失效，也避免把个别厂商塞进来的非 URL 文本误改掉。
+function proxifyHLS($body, $baseURL) {
+  if (!is_string($body) || $body === '') return $body;
+
+  $lines = explode("\n", str_replace("\n", "\n", $body));
+  $out = [];
+  foreach ($lines as $line) {
+    $trimmed = trim($line);
+
+    if ($trimmed === '') {
+      $out[] = $line;
+      continue;
+    }
+
+    if ($trimmed[0] === '#') {
+      //注释行整体保留，但 EXT-X-KEY / EXT-X-MAP / EXT-X-MEDIA 等行内可能带
+      //URI="..." 属性，其中的地址同样需要走代理
+      if (preg_match('#URI="([^"]+)"#i', $line, $m)) {
+        $proxied = mp_proxify_media_url($m[1], $baseURL);
+        $line = str_replace($m[0], 'URI="' . $proxied . '"', $line);
+      }
+      $out[] = $line;
+      continue;
+    }
+
+    //非注释行：按 HLS 规范即 URI。含空白的一律不动，防止误伤异常内容。
+    if (!preg_match('/\s/', $line) && strpos($trimmed, '/') !== false) {
+      $line = mp_proxify_media_url($trimmed, $baseURL);
+    }
+    $out[] = $line;
+  }
+  return implode("\n", $out);
+}
+
+//重写 DASH 清单中的 media/presentationURL 等属性。
+// DASH 是 XML，BaseURL/Initialization/SegmentURL 都可能带相对地址。
+function proxifyDASH($body, $baseURL) {
+  if (!is_string($body) || $body === '') return $body;
+
+  return preg_replace_callback(
+    '#(<(?:BaseURL|Initialization|SegmentURL|media|presentationURL)[^>]*>)([^<]*)(</(?:BaseURL|Initialization|SegmentURL|media|presentationURL)>|<[^>]*/>)#i',
+    function ($m) use ($baseURL) {
+      $inner = trim($m[2]);
+      if ($inner === '') return $m[0];
+      return $m[1] . mp_proxify_media_url($inner, $baseURL) . $m[3];
+    },
+    $body
+  );
+}
+
 //Extract and sanitize the requested URL, handling cases where forms have been rewritten to point to the proxy.
 if (isset($_POST["miniProxyFormAction"])) {
   $url = $_POST["miniProxyFormAction"];
@@ -1035,6 +1143,14 @@ if (stripos($contentType, "text/html") !== false) {
   $finalHTML = proxifyBingURLs($finalHTML, $url);
   $finalHTML = proxifyBingMediaURLs($finalHTML, $url);
   echo "<!-- Proxified page constructed by miniProxy -->\n" . $finalHTML;
+//流媒体播放列表（HLS .m3u8 / DASH .mpd）。这些是纯文本、既不走 DOM 也不走
+//fetch 的特殊格式，必须单独重写其中的相对地址，否则播放器拿不到子列表和
+//视频分片，视频无法播放。
+} else if (isHLSPlaylist($contentType, $responseBody)) {
+  //播放列表本身很小，不需要 Content-Length 之外的额外处理
+  echo proxifyHLS($responseBody, $url);
+} else if (isDASHManifest($contentType, $responseBody)) {
+  echo proxifyDASH($responseBody, $url);
 } else if (stripos($contentType, "text/css") !== false) { //This is CSS, so proxify url() references.
   echo proxifyCSS($responseBody, $url);
 } else { //This isn't a web page or CSS, so serve unmodified through the proxy with the correct headers (images, JavaScript, etc.)
