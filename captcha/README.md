@@ -29,6 +29,7 @@
 也包含下述现代网页修复（详见 `test_modern.php` 与提交记录）：
 
 - `proxifySrcset()` 致命错误（无描述符的 srcset 导致 500）
+- Bing 搜索结果的 `u=a1` / 图片视频搜索的 `murl` 编码参数绕过代理
 - CSP / HSTS / COOP / COEP / Alt-Svc 等响应头透传
 - `data-src`、`data-srcset`、`imagesrcset`、`integrity`、`nonce`、`<base href>`
 - `fetch` / `sendBeacon` / `window.open` 的客户端改写
@@ -242,7 +243,7 @@ define('CAPTCHA_BASE_PATH', '/proxy');   //不要以 / 结尾
 | 原文件改动 | `miniproxy.php` 零改动，与仓库历史一致 |
 | 语法检查 | 全部 PHP 文件通过 `php -l` |
 | 闸门单元测试 | `captcha/test_gate.php` 51 项通过 |
-| 现代网页单元测试 | `test_modern.php` 52 项通过 |
+| 现代网页单元测试 | `test_modern.php` 91 项通过（含 Bing 专项 39 项） |
 | CAP 真实联调 | PoW 50/50 → `redeem` 成功 → 服务端 `validate` 返回 `success:true` |
 | 闸门 + 现代改造协同 | 验证通过后成功代理 `wikipedia.org`（原版 500），200 / 149KB，无 PHP 错误污染，CSP 已剥离 |
 | 代理逻辑一致性 | 入口副本自 `START CONFIGURATION` 起与 `main` 分支 `miniproxy-plus.php` MD5 一致 |
