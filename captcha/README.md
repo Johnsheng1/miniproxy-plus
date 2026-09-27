@@ -263,3 +263,11 @@ define('CAPTCHA_BASE_PATH', '/proxy');   //不要以 / 结尾
 > 注：本机无 PHP 运行时，语法需在服务器上用 `php -l` 校验；
 > CAP API 的 `/api/challenge`、`/api/validate` 已在交付前实测连通
 > （`challenge` 返回 200；`validate` 缺 token 返回 400 `{"success":false,"error":"Missing token"}`）。
+
+## 八、许可
+
+本项目是 [miniProxy](https://github.com/joshdick/miniProxy)（作者 Joshua Dick）的衍生作品，
+沿用其 **GNU General Public License v3**，完整条款见仓库根目录的 [`LICENSE`](../LICENSE)。
+
+分发本项目的任何部分时，必须同时提供 GPLv3 许可证文本并保留版权声明；
+基于本项目的衍生作品必须以相同许可证开源。本项目不提供任何担保。
