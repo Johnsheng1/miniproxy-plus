@@ -326,4 +326,14 @@ curl -sI "https://你的域名/miniproxy_captcha.php?https://example.com" | grep
 
 ## 八、许可
 
-沿用上游 [miniProxy](https://github.com/joshdick/miniProxy) 的 GNU GPL v3。
+本项目是 [miniProxy](https://github.com/joshdick/miniProxy)（作者 Joshua Dick）的衍生作品，
+沿用其 **GNU General Public License v3**，完整条款见仓库根目录的 [`LICENSE`](LICENSE)。
+
+这意味着：
+
+- 你可以自由使用、修改和再分发本项目的代码；
+- 分发时必须同时提供 GPLv3 许可证文本并保留版权声明；
+- 基于本项目的衍生作品必须以相同许可证开源；
+- 本项目**不提供任何担保**，使用风险由使用者自行承担。
+
+上游 miniProxy 自 2020-04-26 起已停止维护，本项目同样"按现状提供"。
